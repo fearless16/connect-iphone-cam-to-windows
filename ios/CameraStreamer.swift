@@ -1,8 +1,9 @@
 import AVFoundation
 import VideoToolbox
+import Darwin
 
-/// Steps 1-4 only: 4K60 capture -> hardware HEVC (Annex-B) -> file.
-/// No UI, no network, no segmentation. Run on device with Developer Mode on.
+/// Steps 1-4: 4K60 capture -> hardware HEVC (Annex-B) -> file + USB send.
+/// No UI, no segmentation. Prints a 1 Hz performance dashboard.
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private let session = AVCaptureSession()
@@ -13,17 +14,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var wroteParameterSets = false
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
 
+    private let stats = Stats()
+    private var dashboardTimer: DispatchSourceTimer?
+    private var lastCaptureUs: UInt64 = 0
+
     // MARK: - Step 1: permission + session start
     func start() {
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) ||
-              !AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera],
-                mediaType: .video,
-                position: .front).devices.isEmpty else {
-            print("ERROR: no camera found")
-            return
-        }
-
         AVCaptureDevice.requestAccess(for: .video) { granted in
             guard granted else {
                 print("ERROR: camera permission denied")
@@ -45,29 +41,29 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
 
-        // Step 2: print supported 4K60 formats
+        print("CAMERA: \(device.localizedName)")
         for format in device.formats {
             let desc = format.formatDescription
             let dims = CMVideoFormatDescriptionGetDimensions(desc)
             let maxFps = format.videoSupportedFrameRateRanges
                 .map { $0.maxFrameRate }.max() ?? 0
-            let codec = CMFormatDescriptionGetMediaSubType(desc) == kCMMediaType_Video ?
-                "video" : "?"
-            print("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps) \(codec)")
+            print("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps)")
         }
 
         do {
             try device.lockForConfiguration()
-            // Step 3: pick a 4K60 format if available, else preset fallback
-            if let fmt = device.formats.first(where: { format in
-                let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            if let fmt = device.formats.first(where: { f in
+                let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
                 return d.width == 3840 && d.height == 2160 &&
-                    format.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= 60 })
+                    f.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= 60 })
             }) {
                 device.activeFormat = fmt
                 let dur = CMTime(value: 1, timescale: 60)
                 device.activeVideoMinFrameDuration = dur
                 device.activeVideoMaxFrameDuration = dur
+                print("CONFIG: active 3840x2160@60")
+            } else {
+                print("WARN: no 4K60 format, using preset fallback")
             }
             device.unlockForConfiguration()
         } catch {
@@ -91,7 +87,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         openOutputFile()
         createEncoder(width: 3840, height: 2160)
         session.startRunning()
-        sender.start()   // Step 5: begin listening for the Windows receiver
+        sender.start()
+        startDashboard()
         print("STATUS: Camera Active")
     }
 
@@ -131,6 +128,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                        from connection: AVCaptureConnection) {
         guard let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        lastCaptureUs = monotonicUs()
         var flags: VTEncodeInfoFlags = []
         VTCompressionSessionEncodeFrame(encoder!,
                                         imageBuffer: px,
@@ -140,24 +138,25 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                         sourceFrameRefcon: nil,
                                         infoFlagsOut: &flags)
         frameNumber &+= 1
-        if frameNumber % 600 == 0 { print("FPS: ~\(frameNumber / max(1, Int(ProcessInfo.processInfo.systemUptime)))") }
+        stats.recordFrame()
     }
 
     // MARK: - Annex-B conversion (length-prefixed -> start codes)
     func writeAnnexB(sampleBuffer: CMSampleBuffer) {
+        let encodeLatencyUs = monotonicUs() &- lastCaptureUs
+        stats.recordLatencyUs(encodeLatencyUs)
+
         guard let desc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
 
         var annexB = Data()
 
-        // Emit VPS/SPS/PPS once (HEVC parameter sets).
         if !wroteParameterSets {
             var count: Int = 0
             CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(desc, 0, nil, nil, &count, nil)
             for i in 0..<count {
                 var ptr: UnsafePointer<UInt8>?
                 var len = 0
-                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    desc, i, &ptr, &len, nil, nil)
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(desc, i, &ptr, &len, nil, nil)
                 if let ptr, len > 0 {
                     annexB.append(contentsOf: startCode)
                     annexB.append(Data(bytes: ptr, count: len))
@@ -167,14 +166,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
 
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var length: Int = 0
         var total: Int = 0
         var ptr: UnsafeMutablePointer<UInt8>?
-        CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: &length,
+        CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: nil,
                                     totalLengthOut: &total, dataPointerOut: &ptr)
         guard let base = ptr, total > 0 else { return }
 
-        // NAL units are 4-byte length prefixed.
         var offset = 0
         while offset + 4 <= total {
             let nalLen = Int(base[offset]) << 24 | Int(base[offset+1]) << 16
@@ -187,9 +184,23 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         outputFile?.write(annexB)
         sender.send(frameNumber: frameNumber,
-                    timestampUs: monotonicUs(),
+                    timestampUs: lastCaptureUs,
                     codec: StreamCodec.hevc.rawValue,
                     frame: annexB)
+    }
+
+    // MARK: - Dashboard (1 Hz)
+    private func startDashboard() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "dashboard"))
+        timer.schedule(deadline: .now(), repeating: 1.0)
+        timer.setEventHandler { [weak self] in
+            guard let s = self else { return }
+            let (fps, dropped, latencyMs, cpu) = s.stats.tick(intervalSec: 1.0)
+            print(String(format: "[DASH] fps=%.1f dropped=%d latency=%.1fms cpu=%.1f%% gpu=n/a",
+                         fps, dropped, latencyMs, cpu))
+        }
+        timer.resume()
+        dashboardTimer = timer
     }
 
     private func monotonicUs() -> UInt64 {
@@ -208,8 +219,42 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     func stop() {
+        dashboardTimer?.cancel()
         session.stopRunning()
         VTCompressionSessionCompleteFrames(encoder!, untilPresentationTimeStamp: .invalid)
         try? outputFile?.close()
+    }
+}
+
+/// Rolling 1-second stats. CPU measured via getrusage deltas (real, process-wide).
+private final class Stats {
+    private var frames: UInt64 = 0
+    private var latencySumUs: UInt64 = 0
+    private var latencyCount: UInt64 = 0
+    private var ruPrev: (user: Double, sys: Double) = (0, 0)
+
+    func recordFrame() { frames &+= 1 }
+    func recordLatencyUs(_ us: UInt64) { latencySumUs &+= us; latencyCount &+= 1 }
+
+    func tick(intervalSec: Double) -> (fps: Double, dropped: Int, latencyMs: Double, cpu: Double) {
+        let fps = Double(frames) / intervalSec
+        let dropped = max(0, Int(60 * intervalSec) - Int(frames))
+        let latencyMs = latencyCount > 0 ? Double(latencySumUs) / Double(latencyCount) / 1000.0 : 0
+        let cpu = cpuPercent(intervalSec: intervalSec)
+        frames = 0
+        latencySumUs = 0
+        latencyCount = 0
+        return (fps, dropped, latencyMs, cpu)
+    }
+
+    private func cpuPercent(intervalSec: Double) -> Double {
+        var ru = rusage()
+        getrusage(RUSAGE_SELF, &ru)
+        let user = Double(ru.ru_utime.tv_sec) + Double(ru.ru_utime.tv_usec) / 1e6
+        let sys = Double(ru.ru_stime.tv_sec) + Double(ru.ru_stime.tv_usec) / 1e6
+        let total = user + sys
+        let delta = total - (ruPrev.user + ruPrev.sys)
+        ruPrev = (user, sys)
+        return min(100.0, max(0.0, delta / intervalSec * 100.0))
     }
 }

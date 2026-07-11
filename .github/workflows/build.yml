@@ -7,7 +7,7 @@ name: Build (iPhone-only backdoor)
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop, 'feature/**']
   workflow_dispatch:
 
 jobs:
@@ -16,6 +16,15 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: TDD - SwiftPM protocol + unit tests
+        run: swift test
+
+      - name: TDD - C protocol header test
+        run: cc -Iprotocol tests/protocol_test.c -o /tmp/ptest && /tmp/ptest
+
+      - name: Benchmark - protocol pack/unpack
+        run: cc -Iprotocol benchmarks/protocol_bench.c -o /tmp/pbench && /tmp/pbench
 
       - name: Build unsigned app
         run: |
