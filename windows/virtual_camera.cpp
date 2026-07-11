@@ -7,6 +7,8 @@
 // Build links: strmiids.lib, strmbase.lib, avcodec.lib, avutil.lib, swscale.lib,
 //              usbmuxd.lib, ws2_32.lib, d3d11.lib
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <streams.h>
 #include <cstdint>
 #include <atomic>
@@ -56,13 +58,20 @@ static bool read_exact(int fd, uint8_t *buf, size_t n) {
 }
 
 static void worker() {
-    usbmuxd_device_info *list = nullptr;
-    if (usbmuxd_get_device_list(&list) <= 0) {
-        fprintf(stderr, "CAMERA: no device\n"); return;
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        fprintf(stderr, "CAMERA: WSAStartup failed\n"); return;
     }
-    int fd = usbmuxd_connect(list[0].device_id, DEVICE_PORT);
+    usbmuxd_device_info_t *list = nullptr;
+    if (usbmuxd_get_device_list(&list) <= 0) {
+        fprintf(stderr, "CAMERA: no device\n");
+        WSACleanup();
+        return;
+    }
+    uint32_t handle = list[0].handle;
+    int fd = usbmuxd_connect(handle, DEVICE_PORT);
     usbmuxd_device_list_free(&list);
-    if (fd < 0) { fprintf(stderr, "CAMERA: connect failed\n"); return; }
+    if (fd < 0) { fprintf(stderr, "CAMERA: connect failed\n"); WSACleanup(); return; }
 
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
     AVCodecContext *dec = avcodec_alloc_context3(codec);
@@ -101,6 +110,7 @@ static void worker() {
     closesocket(fd);
     sws_freeContext(sws);
     avcodec_free_context(&dec);
+    WSACleanup();
 }
 
 // ---- Output pin ----

@@ -6,6 +6,6 @@ let package = Package(
     platforms: [.macOS(.v13)],
     targets: [
         .target(name: "ProtocolCore", path: "shared", sources: ["StreamHeader.swift"]),
-        .testTarget(name: "ProtocolTests", dependencies: ["ProtocolCore"], path: "tests")
+        .testTarget(name: "ProtocolTests", dependencies: ["ProtocolCore"], path: "tests/swift")
     ]
 )

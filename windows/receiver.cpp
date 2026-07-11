@@ -1,15 +1,15 @@
 // Steps 6-7: connect over usbmuxd, receive protocol packets,
 // decode HEVC with FFmpeg (D3D11VA hwaccel), measure decode FPS.
-// Build: cl /std:c++20 receiver.cpp /I<ffmpeg/include> /I<libusbmuxd/include>
-//        /link <ffmpeg.lib> <libusbmuxd.lib> ws2_32.lib
-
+// Build (MSYS2): g++ -std=c++20 receiver.cpp -o receiver.exe \
+//   $(pkg-config --libs libavcodec libavutil) -lusbmuxd -lws2_32
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 #include <chrono>
-
-#include "stream_protocol.h"   // from ../protocol
+#include "stream_protocol.h"
 #include <usbmuxd.h>
 
 extern "C" {
@@ -21,15 +21,15 @@ extern "C" {
 #define DEVICE_PORT 12345u
 
 static int connect_to_device() {
-    usbmuxd_device_info *list = nullptr;
+    usbmuxd_device_info_t *list = nullptr;
     int count = usbmuxd_get_device_list(&list);
     if (count <= 0) {
-        fprintf(stderr, "ERROR: no usbmuxd devices (is iTunes/AppleMobileDevice installed?)\n");
+        fprintf(stderr, "ERROR: no usbmuxd devices (is Apple Mobile Device support installed?)\n");
         return -1;
     }
-    int device_id = list[0].device_id;
-    printf("INFO: device_id=%d udid=%s\n", device_id, list[0].udid);
-    int fd = usbmuxd_connect(device_id, DEVICE_PORT);
+    uint32_t handle = list[0].handle;
+    printf("INFO: handle=%u udid=%s\n", handle, list[0].udid);
+    int fd = usbmuxd_connect(handle, DEVICE_PORT);
     usbmuxd_device_list_free(&list);
     if (fd < 0) {
         fprintf(stderr, "ERROR: usbmuxd_connect failed (phone app must be listening)\n");
@@ -56,7 +56,6 @@ static AVCodecContext *init_decoder() {
     if (!codec) { fprintf(stderr, "ERROR: HEVC decoder not found\n"); return nullptr; }
     AVCodecContext *ctx = avcodec_alloc_context3(codec);
 
-    // D3D11VA hardware acceleration.
     AVBufferRef *hw = nullptr;
     if (av_hwdevice_ctx_create(&hw, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) == 0) {
         ctx->hw_device_ctx = av_buffer_ref(hw);
@@ -74,10 +73,14 @@ static AVCodecContext *init_decoder() {
 }
 
 int main() {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        fprintf(stderr, "ERROR: WSAStartup failed\n");
+        return 1;
+    }
     int fd = connect_to_device();
-    if (fd < 0) return 1;
+    if (fd < 0) { WSACleanup(); return 1; }
 
-    // Step 6: receive and save raw .h265 (decoder is optional below).
     FILE *out = fopen("received.h265", "wb");
     AVCodecContext *dec = init_decoder();
 
@@ -98,7 +101,6 @@ int main() {
         fwrite(frame.data(), 1, h->frame_size, out);
         frames++;
 
-        // Step 7: decode with FFmpeg and count.
         if (dec) {
             AVPacket *pkt = av_packet_alloc();
             pkt->data = frame.data();
@@ -122,7 +124,7 @@ int main() {
     fclose(out);
     if (dec) avcodec_free_context(&dec);
     closesocket(fd);
-    printf("INFO: done, received %llu frames\n",
-           static_cast<unsigned long long>(frames));
+    WSACleanup();
+    printf("INFO: done, received %llu frames\n", static_cast<unsigned long long>(frames));
     return 0;
 }
