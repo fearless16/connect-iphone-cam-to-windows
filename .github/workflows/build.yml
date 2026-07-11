@@ -1,0 +1,96 @@
+name: Build (iPhone-only backdoor)
+
+# Builds BOTH sides in the cloud. You never compile anything.
+#   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
+#   - Windows: receiver.exe + iphonecamera.ax -> download, run on the PC
+# Trigger: push to main, or run manually from the Actions tab.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build unsigned archive
+        run: |
+          xcodebuild clean archive \
+            -project ios/iPhoneCameraStream.xcodeproj \
+            -target iPhoneCameraStream \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -archivePath "$PWD/build/App.xcarchive"
+
+      - name: Package unsigned IPA (TrollStore-ready)
+        run: |
+          mkdir -p Payload
+          cp -r build/App.xcarchive/Products/Applications/*.app Payload/
+          zip -r iPhoneCameraStream.ipa Payload
+          ls -lh iPhoneCameraStream.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneCameraStream-ipa
+          path: iPhoneCameraStream.ipa
+
+  # ---------------------------------------------------------------------------
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-libusbmuxd
+            git
+            make
+
+      - name: Fetch DirectShow BaseClasses
+        run: |
+          git clone --depth 1 https://github.com/microsoft/Windows-classic-samples
+          echo "BASECLASSES_DIR=$(pwd)/Windows-classic-samples/Samples/Win7Samples/multimedia/directshow/baseclasses" >> $GITHUB_ENV
+
+      - name: Build receiver.exe (transport test)
+        run: |
+          g++ -std=c++20 -O2 \
+            -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
+            -I"${{ github.workspace }}/protocol" \
+            "${{ github.workspace }}/windows/receiver.cpp" \
+            -o receiver.exe \
+            $(pkg-config --libs libavcodec libavutil libswscale) \
+            -lusbmuxd -lws2_32
+          ls -lh receiver.exe
+
+      - name: Build iphonecamera.ax (best-effort)
+        run: |
+          set +e
+          g++ -std=c++20 -O2 -shared -DNOMINMAX \
+            -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
+            -I"${{ github.workspace }}/protocol" \
+            "${{ github.workspace }}/windows/virtual_camera.cpp" \
+            -o iphonecamera.ax \
+            $(pkg-config --libs libavcodec libavutil libswscale) \
+            -lusbmuxd -lws2_32 -ld3d11 -lstrmiids -lstrmbase
+          ls -lh iphonecamera.ax 2>/dev/null || echo "AX_BUILD_SKIPPED"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            receiver.exe
+            iphonecamera.ax

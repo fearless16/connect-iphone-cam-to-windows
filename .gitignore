@@ -1,0 +1,16 @@
+# Build artifacts
+build/
+out/
+DerivedData/
+.vs/
+*.xcworkspace/xcuserdata
+
+# Binaries (produced by CI / local build)
+*.exe
+*.ax
+*.ipa
+Payload/
+
+# OS / editor
+.DS_Store
+Thumbs.db

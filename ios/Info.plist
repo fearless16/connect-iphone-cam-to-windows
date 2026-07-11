@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.iphonecamerastream</string>
+    <key>CFBundleName</key>
+    <string>iPhoneCameraStream</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>MinimumOSVersion</key>
+    <string>17.0</string>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>NSCameraUsageDescription</key>
+    <string>Used to stream the camera to a connected Windows PC over USB.</string>
+    <key>UIApplicationSupportsIndirectInputEvents</key>
+    <false/>
+    <key>UISupportedExternalAccessoryProtocols</key>
+    <array/>
+</dict>
+</plist>
