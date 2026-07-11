@@ -1,5 +1,9 @@
 import AVFoundation
+import UIKit
 import VideoToolbox
+import CoreMedia
+import CoreVideo
+import Foundation
 
 /// Steps 1-4 only: 4K60 capture -> hardware HEVC (Annex-B) -> file.
 /// No UI, no network, no segmentation. Run on device with Developer Mode on.
@@ -12,24 +16,35 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var frameNumber: UInt32 = 0
     private var wroteParameterSets = false
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
+    private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
 
     // MARK: - Step 1: permission + session start
     func start() {
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) ||
-              !AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera],
-                mediaType: .video,
-                position: .front).devices.isEmpty else {
+        guard AVCaptureDevice.authorizationStatus(for: .video) != .denied else {
+            print("ERROR: camera permission denied")
+            return
+        }
+
+        let cameras = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera],
+            mediaType: .video,
+            position: .back
+        )
+        guard !cameras.devices.isEmpty else {
             print("ERROR: no camera found")
             return
         }
 
-        AVCaptureDevice.requestAccess(for: .video) { granted in
-            guard granted else {
-                print("ERROR: camera permission denied")
-                return
+        if AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
+            configureSession()
+        } else {
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard granted else {
+                    print("ERROR: camera permission denied")
+                    return
+                }
+                self?.configureSession()
             }
-            self.configureSession()
         }
     }
 
@@ -42,6 +57,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                                    for: .video,
                                                    position: .back) else {
             print("ERROR: no back camera")
+            session.commitConfiguration()
             return
         }
 
@@ -51,14 +67,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let dims = CMVideoFormatDescriptionGetDimensions(desc)
             let maxFps = format.videoSupportedFrameRateRanges
                 .map { $0.maxFrameRate }.max() ?? 0
-            let codec = CMFormatDescriptionGetMediaSubType(desc) == kCMMediaType_Video ?
-                "video" : "?"
-            print("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps) \(codec)")
+            let subtype = CMFormatDescriptionGetMediaSubType(desc)
+            print("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps) subtype=\(subtype)")
         }
 
         do {
             try device.lockForConfiguration()
-            // Step 3: pick a 4K60 format if available, else preset fallback
             if let fmt = device.formats.first(where: { format in
                 let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
                 return d.width == 3840 && d.height == 2160 &&
@@ -74,8 +88,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             print("ERROR: lockForConfiguration \(error)")
         }
 
-        guard let input = try? AVCaptureDeviceInput(device: device) else { return }
-        guard session.canAddInput(input) else { return }
+        guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
+            session.commitConfiguration()
+            return
+        }
         session.addInput(input)
 
         let output = AVCaptureVideoDataOutput()
@@ -83,7 +99,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
         output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "capture"))
-        guard session.canAddOutput(output) else { return }
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            return
+        }
         session.addOutput(output)
 
         session.commitConfiguration()
@@ -92,12 +111,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         createEncoder(width: 3840, height: 2160)
         session.startRunning()
         sender.start()   // Step 5: begin listening for the Windows receiver
+        frameStartUptime = ProcessInfo.processInfo.systemUptime
         print("STATUS: Camera Active")
     }
 
     // MARK: - Step 4: VideoToolbox hardware HEVC encoder
     private func createEncoder(width: Int, height: Int) {
-        var session: VTCompressionSession?
+        var sessionOut: VTCompressionSession?
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let status = VTCompressionSessionCreate(
             allocator: nil,
@@ -113,26 +133,26 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 streamer.writeAnnexB(sampleBuffer: sb)
             },
             refcon: refcon,
-            compressionSessionOut: &session)
+            compressionSessionOut: &sessionOut)
 
-        guard status == noErr, let enc = session else {
+        guard status == noErr, let enc = sessionOut else {
             print("ERROR: VTCompressionSessionCreate \(status)")
             return
         }
         encoder = enc
-        VTSessionSetProperty(enc, key: kVTCompressionSessionPropertyKey_RealTime, value: true as CFTypeRef)
-        VTSessionSetProperty(enc, key: kVTCompressionSessionPropertyKey_AllowFrameReordering, value: false as CFTypeRef)
-        VTSessionSetProperty(enc, key: kVTCompressionSessionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTCompressionSessionPrepareToEncodeFrames(enc)
     }
 
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard let enc = encoder, let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         var flags: VTEncodeInfoFlags = []
-        VTCompressionSessionEncodeFrame(encoder!,
+        VTCompressionSessionEncodeFrame(enc,
                                         imageBuffer: px,
                                         presentationTimeStamp: pts,
                                         duration: .invalid,
@@ -140,7 +160,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                         sourceFrameRefcon: nil,
                                         infoFlagsOut: &flags)
         frameNumber &+= 1
-        if frameNumber % 600 == 0 { print("FPS: ~\(frameNumber / max(1, Int(ProcessInfo.processInfo.systemUptime)))") }
+        let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - frameStartUptime)
+        if frameNumber % 600 == 0 {
+            print(String(format: "FPS: ~%.1f", Double(frameNumber) / elapsed))
+        }
     }
 
     // MARK: - Annex-B conversion (length-prefixed -> start codes)
@@ -152,12 +175,23 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         // Emit VPS/SPS/PPS once (HEVC parameter sets).
         if !wroteParameterSets {
             var count: Int = 0
-            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(desc, 0, nil, nil, &count, nil)
+            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                desc,
+                parameterSetIndex: 0,
+                parameterSetPointerOut: nil,
+                parameterSetSizeOut: nil,
+                parameterSetCountOut: &count,
+                nalUnitHeaderLengthOut: nil)
             for i in 0..<count {
                 var ptr: UnsafePointer<UInt8>?
                 var len = 0
                 CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    desc, i, &ptr, &len, nil, nil)
+                    desc,
+                    parameterSetIndex: i,
+                    parameterSetPointerOut: &ptr,
+                    parameterSetSizeOut: &len,
+                    parameterSetCountOut: nil,
+                    nalUnitHeaderLengthOut: nil)
                 if let ptr, len > 0 {
                     annexB.append(contentsOf: startCode)
                     annexB.append(Data(bytes: ptr, count: len))
@@ -169,19 +203,27 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var length: Int = 0
         var total: Int = 0
-        var ptr: UnsafeMutablePointer<UInt8>?
-        CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: &length,
-                                    totalLengthOut: &total, dataPointerOut: &ptr)
-        guard let base = ptr, total > 0 else { return }
+        var ptr: UnsafeMutablePointer<Int8>?
+        let status = CMBlockBufferGetDataPointer(dataBuffer,
+                                                atOffset: 0,
+                                                lengthAtOffsetOut: &length,
+                                                totalLengthOut: &total,
+                                                dataPointerOut: &ptr)
+        guard status == kCMBlockBufferNoErr,
+              let base = ptr,
+              total > 0 else { return }
+
+        let bytes = UnsafeRawPointer(base).assumingMemoryBound(to: UInt8.self)
 
         // NAL units are 4-byte length prefixed.
         var offset = 0
         while offset + 4 <= total {
-            let nalLen = Int(base[offset]) << 24 | Int(base[offset+1]) << 16
-                       | Int(base[offset+2]) << 8 | Int(base[offset+3])
+            let nalLen = Int(bytes[offset]) << 24 | Int(bytes[offset+1]) << 16
+                       | Int(bytes[offset+2]) << 8 | Int(bytes[offset+3])
             offset += 4
+            guard nalLen > 0, offset + nalLen <= total else { break }
             annexB.append(contentsOf: startCode)
-            annexB.append(Data(bytes: base + offset, count: nalLen))
+            annexB.append(Data(bytes: bytes.advanced(by: offset), count: nalLen))
             offset += nalLen
         }
 
@@ -209,7 +251,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     func stop() {
         session.stopRunning()
-        VTCompressionSessionCompleteFrames(encoder!, untilPresentationTimeStamp: .invalid)
+        if let encoder {
+            VTCompressionSessionCompleteFrames(encoder, untilPresentationTimeStamp: .invalid)
+        }
         try? outputFile?.close()
     }
 }
