@@ -25,12 +25,11 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_IDENTITY="" \
-            -derivedDataPath "$PWD/build"
+            CODE_SIGN_IDENTITY=""
 
       - name: Package unsigned IPA (TrollStore-ready)
         run: |
-          APP=$(find "$PWD/build/Build/Products" -name '*.app' -maxdepth 3 | head -1)
+          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.app' -maxdepth 6 | head -1)
           echo "APP=$APP"
           mkdir -p Payload
           cp -r "$APP" Payload/
