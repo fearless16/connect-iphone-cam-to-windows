@@ -14,7 +14,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
-#include <libavutil/hwdevice.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 }
 
