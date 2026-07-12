@@ -50,7 +50,7 @@ final class BackgroundStageTests: XCTestCase {
 
     func testCompositeReturnsBGRABuffer() {
         guard let f = frame, let m = mask else { XCTFail("buffer alloc"); return }
-        let stage = BackgroundStage()
+        let stage = BackgroundStage(context: CIContext(options: [.useSoftwareRenderer: true]))
         guard let out = stage.composite(frame: f, mask: m, params: CompositorParams()) else {
             XCTFail("composite returned nil"); return
         }
@@ -60,7 +60,7 @@ final class BackgroundStageTests: XCTestCase {
 
     func testSubjectStaysSharpAndBackgroundIsBlurred() {
         guard let f = frame, let m = mask else { XCTFail("buffer alloc"); return }
-        let stage = BackgroundStage()
+        let stage = BackgroundStage(context: CIContext(options: [.useSoftwareRenderer: true]))
         // Full-res bokeh so the assertion is unambiguous.
         let params = CompositorParams(bokehRadius: 16, shadowStrength: 0, backgroundScale: 1)
         guard let out = stage.composite(frame: f, mask: m, params: params) else { XCTFail("composite"); return }
@@ -81,7 +81,7 @@ final class BackgroundStageTests: XCTestCase {
         // At the mask boundary, feathering yields an intermediate (not hard) alpha,
         // so a pixel just inside the boundary is neither pure subject nor pure bg.
         guard let f = frame, let m = mask else { XCTFail("buffer alloc"); return }
-        let stage = BackgroundStage()
+        let stage = BackgroundStage(context: CIContext(options: [.useSoftwareRenderer: true]))
         let params = CompositorParams(feather: 0.4, bokehRadius: 8, shadowStrength: 0, backgroundScale: 1)
         guard let out = stage.composite(frame: f, mask: m, params: params) else { XCTFail("composite"); return }
         // x=33 is just inside the background side of the boundary; with feather=0.4 the
@@ -96,7 +96,7 @@ final class BackgroundStageTests: XCTestCase {
             return (v, v, v, 255)
         }
         guard let f = frame, let m = smallMask else { XCTFail("alloc"); return }
-        let stage = BackgroundStage()
+        let stage = BackgroundStage(context: CIContext(options: [.useSoftwareRenderer: true]))
         XCTAssertNotNil(stage.composite(frame: f, mask: m, params: CompositorParams()))
     }
 }
