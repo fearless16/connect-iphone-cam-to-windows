@@ -28,18 +28,20 @@ jobs:
 
       - name: Build unsigned app
         run: |
-          xcodebuild clean build \
+          xcodebuild build \
             -project ios/iPhoneCameraStream.xcodeproj \
             -target iPhoneCameraStream \
             -configuration Release \
             -destination 'generic/platform=iOS' \
+            BUILD_DIR="$PWD/build" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY=""
 
       - name: Package unsigned IPA (TrollStore-ready)
         run: |
-          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.app' -maxdepth 6 | head -1)
+          APP=$(find "$PWD/build" -name 'iPhoneCameraStream.app' -maxdepth 6 | head -1)
           echo "APP=$APP"
+          [ -n "$APP" ] || { echo "ERROR: iPhoneCameraStream.app not found in build output"; find "$PWD/build" -maxdepth 3; exit 1; }
           mkdir -p Payload
           cp -r "$APP" Payload/
           zip -r iPhoneCameraStream.ipa Payload
@@ -67,6 +69,7 @@ jobs:
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-libusbmuxd
+            mingw-w64-x86_64-pkg-config
             git
             make
 
@@ -77,25 +80,31 @@ jobs:
 
       - name: Build receiver.exe (transport test)
         run: |
+          LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd-2.0 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="-lavcodec -lswscale -lavutil -lusbmuxd"
           g++ -std=c++20 -O2 \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
             -o receiver.exe \
-            $(pkg-config --libs libavcodec libavutil libswscale) \
-            -lusbmuxd -lws2_32
+            $LIBS \
+            -lws2_32
           ls -lh receiver.exe
 
       - name: Build iphonecamera.ax (best-effort)
         run: |
           set +e
+          LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd-2.0 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="-lavcodec -lswscale -lavutil -lusbmuxd"
           g++ -std=c++20 -O2 -shared -DNOMINMAX \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/virtual_camera.cpp" \
             -o iphonecamera.ax \
-            $(pkg-config --libs libavcodec libavutil libswscale) \
-            -lusbmuxd -lws2_32 -ld3d11 -lstrmiids -lstrmbase
+            $LIBS \
+            -lws2_32 -ld3d11 -lstrmiids -lstrmbase
           ls -lh iphonecamera.ax 2>/dev/null || echo "AX_BUILD_SKIPPED"
 
       - uses: actions/upload-artifact@v4
