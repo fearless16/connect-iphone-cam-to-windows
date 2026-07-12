@@ -15,6 +15,11 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+# Allows the workflow to push the captured .ax build log back to the repo
+# so it can be inspected via raw.githubusercontent.com (no auth needed).
+permissions:
+  contents: write
+
 jobs:
   # ---------------------------------------------------------------------------
   ios:
@@ -119,6 +124,8 @@ jobs:
           ls -lh receiver.exe
 
       - name: Build iphonecamera.ax
+        id: build_ax
+        continue-on-error: true
         run: |
           LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd-2.0 2>/dev/null)"
           [ -z "$LIBS" ] && LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd 2>/dev/null)"
@@ -130,8 +137,19 @@ jobs:
             "${{ github.workspace }}/windows/virtual_camera.cpp" \
             -o iphonecamera.ax \
             $LIBS \
-            -lws2_32 -ld3d11 -lstrmiids -lstrmbase
-          ls -lh iphonecamera.ax
+            -lws2_32 -ld3d11 -lstrmiids -lstrmbase 2> ax_err.log
+          ls -lh iphonecamera.ax 2>/dev/null || echo "AX_BUILD_SKIPPED"
+
+      - name: Push .ax build log to repo (debug)
+        if: always()
+        run: |
+          mkdir -p logs
+          cp ax_err.log logs/ax_build.log 2>/dev/null || echo "no ax error log"
+          git config user.email "ci@noreply.local"
+          git config user.name "ci-debug"
+          git add logs/ax_build.log
+          git commit -m "debug: .ax build log [skip ci]" || true
+          git push origin HEAD:ci-ax-log || true
 
       - uses: actions/upload-artifact@v4
         with:
