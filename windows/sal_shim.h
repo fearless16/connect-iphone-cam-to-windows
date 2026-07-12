@@ -37,7 +37,8 @@
 #define __field_bcount_opt(x)
 #define __range(a, b)
 #define __success(x)
-#define __null
+/* NOTE: do NOT define __null — it is a GCC/MinGW builtin (NULL expands to it
+ * in C++ mode). Redefining it corrupts <windows.h> parsing. */
 #define __notnull
 #define __maybenull
 #define __reserved
