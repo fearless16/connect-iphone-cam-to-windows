@@ -130,7 +130,7 @@ jobs:
           LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd-2.0 2>/dev/null)"
           [ -z "$LIBS" ] && LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd 2>/dev/null)"
           [ -z "$LIBS" ] && LIBS="-lavcodec -lswscale -lavutil -lusbmuxd"
-          g++ -std=c++20 -O2 -shared -DNOMINMAX -fpermissive \
+          g++ -std=gnu++20 -O2 -shared -DNOMINMAX -fpermissive \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             -include "${{ github.workspace }}/windows/sal_shim.h" \
