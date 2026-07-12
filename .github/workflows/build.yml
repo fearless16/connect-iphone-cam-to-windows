@@ -3,12 +3,17 @@ name: Build (iPhone-only backdoor)
 # Builds BOTH sides in the cloud. You never compile anything.
 #   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
 #   - Windows: receiver.exe + iphonecamera.ax -> download, run on the PC
-# Trigger: push to main, or run manually from the Actions tab.
+# Trigger: push to main, develop, or feature/**, or run manually from the Actions tab.
 
 on:
   push:
     branches: [main, develop, 'feature/**']
   workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes and get faster feedback.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -16,6 +21,16 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.cache
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
 
       - name: TDD - SwiftPM protocol + unit tests
         run: swift test
@@ -26,12 +41,21 @@ jobs:
       - name: Benchmark - protocol pack/unpack
         run: cc -Iprotocol benchmarks/protocol_bench.c -o /tmp/pbench && /tmp/pbench
 
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/**/*.swift', 'ios/**/*.h', 'ios/**/*.pbxproj', 'ios/**/*.xcassets/**', 'shared/**/*') }}
+          restore-keys: |
+            deriveddata-${{ runner.os }}-
+
+      # No `clean` so the DerivedData cache stays warm; Debug is faster than Release.
       - name: Build unsigned app
         run: |
           xcodebuild build \
             -project ios/iPhoneCameraStream.xcodeproj \
             -target iPhoneCameraStream \
-            -configuration Release \
+            -configuration Debug \
             -destination 'generic/platform=iOS' \
             BUILD_DIR="$PWD/build" \
             CODE_SIGNING_ALLOWED=NO \
@@ -61,10 +85,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # cache:true reuses installed packages; update:false skips the slow repo refresh.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
+          update: false
+          cache: true
           install: >-
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-ffmpeg
