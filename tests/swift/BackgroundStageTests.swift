@@ -23,63 +23,80 @@ final class BackgroundStageTests: XCTestCase {
         return b
     }
 
+    // Subject = white left half; background = horizontal blue->red gradient.
     private var frame: CVPixelBuffer? {
         makeBuffer(width: 64, height: 64) { x, _ in
-            // subject on the left half (white), background right half (blue)
-            if x < 32 { return (255, 255, 255, 255) } else { return (0, 0, 255, 255) }
+            if x < 32 { return (255, 255, 255, 255) }
+            let t = Float(x - 32) / 31.0
+            return (UInt8(t * 255), 0, UInt8((1 - t) * 255), 255)
         }
     }
 
     private var mask: CVPixelBuffer? {
         makeBuffer(width: 64, height: 64) { x, _ in
-            // mask 255 on subject side, 0 elsewhere
             let v: UInt8 = x < 32 ? 255 : 0
             return (v, v, v, 255)
         }
     }
 
+    private func pixel(_ buf: CVPixelBuffer, x: Int, y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+        CVPixelBufferLockBaseAddress(buf, [])
+        defer { CVPixelBufferUnlockBaseAddress(buf, []) }
+        let base = CVPixelBufferGetBaseAddress(buf)!
+        let row = CVPixelBufferGetBytesPerRow(buf)
+        let p = base.advanced(by: y * row + x * 4).assumingMemoryBound(to: UInt8.self)
+        return (p[2], p[1], p[0], p[3])
+    }
+
     func testCompositeReturnsBGRABuffer() {
         guard let f = frame, let m = mask else { XCTFail("buffer alloc"); return }
         let stage = BackgroundStage()
-        let out = stage.composite(frame: f, mask: m, params: CompositorParams())
-        XCTAssertNotNil(out)
-        var w = 0, h = 0
-        if let out {
-            CVPixelBufferGetWidth(out); w = CVPixelBufferGetWidth(out); h = CVPixelBufferGetHeight(out)
+        guard let out = stage.composite(frame: f, mask: m, params: CompositorParams()) else {
+            XCTFail("composite returned nil"); return
         }
-        XCTAssertEqual(w, 64)
-        XCTAssertEqual(h, 64)
+        XCTAssertEqual(CVPixelBufferGetWidth(out), 64)
+        XCTAssertEqual(CVPixelBufferGetHeight(out), 64)
     }
 
-    func testCompositeBlursBackgroundRegion() {
-        // Without a replacement image, the right (background) half must change
-        // after bokeh, while the left (subject) half stays white.
+    func testSubjectStaysSharpAndBackgroundIsBlurred() {
         guard let f = frame, let m = mask else { XCTFail("buffer alloc"); return }
         let stage = BackgroundStage()
-        let params = CompositorParams(bokehRadius: 16, shadowStrength: 0)
+        // Full-res bokeh so the assertion is unambiguous.
+        let params = CompositorParams(bokehRadius: 16, shadowStrength: 0, backgroundScale: 1)
         guard let out = stage.composite(frame: f, mask: m, params: params) else { XCTFail("composite"); return }
 
-        CVPixelBufferLockBaseAddress(out, [])
-        defer { CVPixelBufferUnlockBaseAddress(out, []) }
-        let base = CVPixelBufferGetBaseAddress(out)!
-        let row = CVPixelBufferGetBytesPerRow(out)
-        let bgPixel = base.advanced(by: 48 * row + 48 * 4).assumingMemoryBound(to: UInt8.self)
-        let subjPixel = base.advanced(by: 16 * row + 16 * 4).assumingMemoryBound(to: UInt8.self)
-        // subject pixel must remain bright white
-        XCTAssertGreaterThan(Int(subjPixel[2]), 200, "subject should stay sharp/white")
-        // background pixel should no longer be pure blue (bokeh mixed it)
-        XCTAssertNotEqual(Int(bgPixel[2]), 255, "background should be blurred, not pure blue")
+        // Subject pixel (left, mask=255) must remain bright white.
+        let subj = pixel(out, x: 16, y: 16)
+        XCTAssertGreaterThan(Int(subj.0), 200, "subject should stay sharp/white, got \(subj)")
+
+        // Background pixel (right, mask=0): bokeh mixes the gradient neighbours,
+        // so the composited value must differ from the original frame pixel.
+        let original = pixel(f, x: 48, y: 48)
+        let composited = pixel(out, x: 48, y: 48)
+        XCTAssertNotEqual(composited.0, original.0, "background should be blurred, not original")
+        XCTAssertNotEqual(composited.2, original.2, "background should be blurred, not original")
+    }
+
+    func testSoftEdgeFeathering() {
+        // At the mask boundary, feathering yields an intermediate (not hard) alpha,
+        // so a pixel just inside the boundary is neither pure subject nor pure bg.
+        guard let f = frame, let m = mask else { XCTFail("buffer alloc"); return }
+        let stage = BackgroundStage()
+        let params = CompositorParams(feather: 0.4, bokehRadius: 8, shadowStrength: 0, backgroundScale: 1)
+        guard let out = stage.composite(frame: f, mask: m, params: params) else { XCTFail("composite"); return }
+        // x=33 is just inside the background side of the boundary; with feather=0.4 the
+        // alpha is partial, so the pixel is a blend, not pure gradient colour.
+        let px = pixel(out, x: 33, y: 32)
+        XCTAssertLessThan(Int(px.0), 250, "boundary pixel should be feathered, not hard-cut: \(px)")
     }
 
     func testMaskScalingHandlesMismatch() {
-        // mask smaller than frame must still composite without crashing
         let smallMask = makeBuffer(width: 32, height: 32) { x, _ in
             let v: UInt8 = x < 16 ? 255 : 0
             return (v, v, v, 255)
         }
         guard let f = frame, let m = smallMask else { XCTFail("alloc"); return }
         let stage = BackgroundStage()
-        let out = stage.composite(frame: f, mask: m, params: CompositorParams())
-        XCTAssertNotNil(out)
+        XCTAssertNotNil(stage.composite(frame: f, mask: m, params: CompositorParams()))
     }
 }
