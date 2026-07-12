@@ -41,6 +41,6 @@ final class ProtocolTests: XCTestCase {
         let h = StreamHeader(magic: StreamHeader.magic, frameNumber: 1,
                              timestampUs: 0, codec: StreamCodec.h264.rawValue, frameSize: 10)
         let data = h.encode()
-        XCTAssertEqual(data[0...3].map(UInt8.init), [0x4D, 0x43, 0x50, 0x49]) // "IPCM" LE
+        XCTAssertEqual(Array(data[0...3]), [0x4D, 0x43, 0x50, 0x49]) // "IPCM" LE
     }
 }
