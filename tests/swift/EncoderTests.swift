@@ -7,10 +7,21 @@ import CoreVideo
 final class EncoderTests: XCTestCase {
     func testEncoderCreates() throws {
         var s: VTCompressionSession?
-        let st = VTCompressionSessionCreate(nil, 1280, 720, kCMVideoCodecType_HEVC,
-                                           nil, nil, nil, nil, &s)
-        try XCTSkipUnless(st == noErr && s != nil, "No HEVC encoder on this host.")
-        XCTAssertEqual(st, noErr)
-        VTCompressionSessionInvalidate(s!)
+        let status = VTCompressionSessionCreate(
+            allocator: nil,
+            width: 1280,
+            height: 720,
+            codecType: kCMVideoCodecType_HEVC,
+            encoderSpecification: nil,
+            imageBufferAttributes: nil,
+            compressedDataAllocator: nil,
+            outputCallback: nil,
+            refcon: nil,
+            compressionSessionOut: &s)
+        try XCTSkipUnless(status == noErr && s != nil, "No HEVC encoder on this host.")
+        XCTAssertEqual(status, noErr)
+        if let session = s {
+            VTCompressionSessionInvalidate(session)
+        }
     }
 }

@@ -117,9 +117,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
         encoder = enc
-        VTSessionSetProperty(enc, key: kVTCompressionSessionPropertyKey_RealTime, value: true as CFTypeRef)
-        VTSessionSetProperty(enc, key: kVTCompressionSessionPropertyKey_AllowFrameReordering, value: false as CFTypeRef)
-        VTSessionSetProperty(enc, key: kVTCompressionSessionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTCompressionSessionPrepareToEncodeFrames(enc)
     }
 
@@ -152,11 +152,23 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         if !wroteParameterSets {
             var count: Int = 0
-            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(desc, 0, nil, nil, &count, nil)
+            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                desc,
+                parameterSetIndex: 0,
+                parameterSetPointerOut: nil,
+                parameterSetSizeOut: nil,
+                parameterSetCountOut: &count,
+                nalUnitHeaderLengthOut: nil)
             for i in 0..<count {
                 var ptr: UnsafePointer<UInt8>?
                 var len = 0
-                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(desc, i, &ptr, &len, nil, nil)
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                    desc,
+                    parameterSetIndex: i,
+                    parameterSetPointerOut: &ptr,
+                    parameterSetSizeOut: &len,
+                    parameterSetCountOut: nil,
+                    nalUnitHeaderLengthOut: nil)
                 if let ptr, len > 0 {
                     annexB.append(contentsOf: startCode)
                     annexB.append(Data(bytes: ptr, count: len))
@@ -167,7 +179,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var total: Int = 0
-        var ptr: UnsafeMutablePointer<UInt8>?
+        var ptr: UnsafeMutablePointer<Int8>?
         CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: nil,
                                     totalLengthOut: &total, dataPointerOut: &ptr)
         guard let base = ptr, total > 0 else { return }

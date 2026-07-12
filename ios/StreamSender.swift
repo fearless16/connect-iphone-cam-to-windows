@@ -35,7 +35,7 @@ final class StreamSender {
     /// Send a complete protocol packet (header + Annex-B frame).
     func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, frame: Data) {
         guard let conn = connection else { return }
-        var header = StreamHeader(
+        let header = StreamHeader(
             magic: StreamHeader.magic,
             frameNumber: frameNumber,
             timestampUs: timestampUs,

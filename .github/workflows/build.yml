@@ -3,12 +3,17 @@ name: Build (iPhone-only backdoor)
 # Builds BOTH sides in the cloud. You never compile anything.
 #   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
 #   - Windows: receiver.exe + iphonecamera.ax -> download, run on the PC
-# Trigger: push to main, or run manually from the Actions tab.
+# Trigger: push to main, develop, or feature/**, or run manually from the Actions tab.
 
 on:
   push:
     branches: [main, develop, 'feature/**']
   workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes and get faster feedback.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -16,6 +21,16 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.cache
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
 
       - name: TDD - SwiftPM protocol + unit tests
         run: swift test
@@ -26,20 +41,31 @@ jobs:
       - name: Benchmark - protocol pack/unpack
         run: cc -Iprotocol benchmarks/protocol_bench.c -o /tmp/pbench && /tmp/pbench
 
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/**/*.swift', 'ios/**/*.h', 'ios/**/*.pbxproj', 'ios/**/*.xcassets/**', 'shared/**/*') }}
+          restore-keys: |
+            deriveddata-${{ runner.os }}-
+
+      # No `clean` so the DerivedData cache stays warm; Debug is faster than Release.
       - name: Build unsigned app
         run: |
-          xcodebuild clean build \
+          xcodebuild build \
             -project ios/iPhoneCameraStream.xcodeproj \
             -target iPhoneCameraStream \
-            -configuration Release \
+            -configuration Debug \
             -destination 'generic/platform=iOS' \
+            BUILD_DIR="$PWD/build" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY=""
 
       - name: Package unsigned IPA (TrollStore-ready)
         run: |
-          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.app' -maxdepth 6 | head -1)
+          APP=$(find "$PWD/build" -name 'iPhoneCameraStream.app' -maxdepth 6 | head -1)
           echo "APP=$APP"
+          [ -n "$APP" ] || { echo "ERROR: iPhoneCameraStream.app not found in build output"; find "$PWD/build" -maxdepth 3; exit 1; }
           mkdir -p Payload
           cp -r "$APP" Payload/
           zip -r iPhoneCameraStream.ipa Payload
@@ -59,14 +85,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # cache:true reuses installed packages; update:false skips the slow repo refresh.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: true
+          update: false
+          cache: true
           install: >-
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-libusbmuxd
+            mingw-w64-x86_64-pkg-config
             git
             make
 
@@ -77,26 +106,32 @@ jobs:
 
       - name: Build receiver.exe (transport test)
         run: |
+          LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd-2.0 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="-lavcodec -lswscale -lavutil -lusbmuxd"
           g++ -std=c++20 -O2 \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
             -o receiver.exe \
-            $(pkg-config --libs libavcodec libavutil libswscale) \
-            -lusbmuxd -lws2_32
+            $LIBS \
+            -lws2_32
           ls -lh receiver.exe
 
       - name: Build iphonecamera.ax (best-effort)
         run: |
           set +e
+          LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd-2.0 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="$(pkg-config --libs libavcodec libavutil libswscale libusbmuxd 2>/dev/null)"
+          [ -z "$LIBS" ] && LIBS="-lavcodec -lswscale -lavutil -lusbmuxd"
           g++ -std=c++20 -O2 -shared -DNOMINMAX -fpermissive \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             -include "${{ github.workspace }}/windows/sal_shim.h" \
             "${{ github.workspace }}/windows/virtual_camera.cpp" \
             -o iphonecamera.ax \
-            $(pkg-config --libs libavcodec libavutil libswscale) \
-            -lusbmuxd -lws2_32 -ld3d11 -lstrmiids -lstrmbase
+            $LIBS \
+            -lws2_32 -ld3d11 -lstrmiids -lstrmbase
           ls -lh iphonecamera.ax 2>/dev/null || echo "AX_BUILD_SKIPPED"
 
       - uses: actions/upload-artifact@v4
