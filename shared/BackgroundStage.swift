@@ -108,7 +108,7 @@ public final class BackgroundStage {
     }
 
     /// Device-only segmentation via the Neural Engine. Skipped in tests.
-    public func segment(frame: CVPixelBuffer, quality: VNPersonSegmentationRequest.QualityLevel = .balanced) -> CVPixelBuffer? {
+    public func segment(frame: CVPixelBuffer, quality: VNGeneratePersonSegmentationRequest.QualityLevel = .balanced) -> CVPixelBuffer? {
         let req = VNGeneratePersonSegmentationRequest()
         req.qualityLevel = quality
         req.outputPixelFormat = kCVPixelFormatType_OneComponent8
