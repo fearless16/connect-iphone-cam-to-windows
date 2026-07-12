@@ -39,7 +39,7 @@ jobs:
         run: set -o pipefail; swift test 2>&1 | tee /tmp/swift_test.log
 
       - name: Push swift test log (debug)
-        if: failure()
+        if: always()
         run: |
           mkdir -p logs
           cp /tmp/swift_test.log logs/swift_test.log 2>/dev/null || echo "no log"
