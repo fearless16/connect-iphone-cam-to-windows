@@ -146,8 +146,8 @@ public final class BackgroundStage {
 
     // Trimap feather: soft alpha = smoothstep over the mask band.
     private static let featherSrc = """
-    kernel vec4 feather(__sample m, float feather) {
-        float v = m.r;
+    kernel vec4 feather(sampler m, float feather) {
+        float v = sample(m, destCoord()).r;
         float lo = max(feather * 0.5, 0.001);
         float a = smoothstep(lo, 1.0 - lo, v);
         return vec4(a, a, a, a);
@@ -156,7 +156,7 @@ public final class BackgroundStage {
 
     // Disc (bokeh) blur: uniform sampling inside a circle (optical defocus, not gaussian).
     private static let bokehSrc = """
-    kernel vec4 bokeh(__sample s, float radius) {
+    kernel vec4 bokeh(sampler s, float radius) {
         vec2 c = destCoord();
         vec4 acc = vec4(0.0);
         float n = 0.0;
@@ -176,7 +176,7 @@ public final class BackgroundStage {
 
     // Contact shadow: blurred (1 - alpha) halo, dark.
     private static let shadowSrc = """
-    kernel vec4 shadow(__sample a, float radius, float strength) {
+    kernel vec4 shadow(sampler a, float radius, float strength) {
         vec2 c = destCoord();
         vec4 acc = vec4(0.0);
         float n = 0.0;
