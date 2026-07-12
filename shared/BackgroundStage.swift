@@ -64,7 +64,11 @@ public final class BackgroundStage {
             y: fImg.extent.height / mImg.extent.height
         )
         let mScaled = mImg.transformed(by: scale)
-        guard let alpha = featherK.apply(extent: fImg.extent, arguments: [mScaled, params.feather]) else {
+        guard let alpha = featherK.apply(
+            extent: fImg.extent,
+            roiCallback: { _, rect in rect },
+            arguments: [mScaled, params.feather]
+        ) else {
             return nil
         }
 
@@ -77,7 +81,11 @@ public final class BackgroundStage {
 
         let bgWithShadow: CIImage
         if params.shadowStrength > 0,
-           let sh = shadowK.apply(extent: fImg.extent, arguments: [alpha, params.shadowRadius, params.shadowStrength]) {
+           let sh = shadowK.apply(
+            extent: fImg.extent,
+            roiCallback: { _, rect in rect.insetBy(dx: -CGFloat(params.shadowRadius), dy: -CGFloat(params.shadowRadius)) },
+            arguments: [alpha, params.shadowRadius, params.shadowStrength]
+           ) {
             let black = CIImage(color: .black).cropped(to: fImg.extent)
             bgWithShadow = black.applyingFilter("CIBlendWithMask",
                 parameters: ["inputBackgroundImage": bg, "inputMaskImage": sh])
@@ -113,10 +121,18 @@ public final class BackgroundStage {
 
     private func bokehBackground(_ img: CIImage, radius: Float, scale: Float) -> CIImage {
         guard scale < 1 else {
-            return bokehK.apply(extent: img.extent, arguments: [img, radius]) ?? img
+            return bokehK.apply(
+                extent: img.extent,
+                roiCallback: { _, rect in rect.insetBy(dx: -CGFloat(radius), dy: -CGFloat(radius)) },
+                arguments: [img, radius]
+            ) ?? img
         }
         let small = img.transformed(by: CGAffineTransform(scaleX: CGFloat(scale), y: CGFloat(scale)))
-        guard let blurred = bokehK.apply(extent: small.extent, arguments: [small, radius * scale]) else { return img }
+        guard let blurred = bokehK.apply(
+            extent: small.extent,
+            roiCallback: { _, rect in rect.insetBy(dx: -CGFloat(radius * scale), dy: -CGFloat(radius * scale)) },
+            arguments: [small, radius * scale]
+        ) else { return img }
         return blurred.transformed(by: CGAffineTransform(scaleX: 1 / CGFloat(scale), y: 1 / CGFloat(scale)))
     }
 
