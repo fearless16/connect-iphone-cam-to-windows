@@ -5,7 +5,7 @@
 /* Micro-benchmark: header pack/unpack throughput. No allocation in the loop. */
 int main(void) {
     uint8_t buf[STREAM_HEADER_SIZE];
-    const int N = 5_000_000;
+    const int N = 5000000;
     clock_t t0 = clock();
     for (int i = 0; i < N; i++) {
         stream_header_write(buf, (uint32_t)i, (uint64_t)i, STREAM_CODEC_HEVC, (uint32_t)i);
