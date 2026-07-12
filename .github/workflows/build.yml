@@ -31,7 +31,7 @@ jobs:
           path: |
             .build
             ~/.cache
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift', 'Package.resolved', 'shared/**', 'tests/**') }}
           restore-keys: |
             spm-${{ runner.os }}-
 
