@@ -29,9 +29,9 @@ static int connect_to_device() {
         fprintf(stderr, "ERROR: no usbmuxd devices (is iTunes/AppleMobileDevice installed?)\n");
         return -1;
     }
-    int device_id = list[0].device_id;
-    printf("INFO: device_id=%d udid=%s\n", device_id, list[0].udid);
-    int fd = usbmuxd_connect(device_id, DEVICE_PORT);
+    const int device_handle = static_cast<int>(list[0].handle);
+    printf("INFO: device_handle=%d udid=%s\n", device_handle, list[0].udid);
+    int fd = usbmuxd_connect(device_handle, DEVICE_PORT);
     usbmuxd_device_list_free(&list);
     if (fd < 0) {
         fprintf(stderr, "ERROR: usbmuxd_connect failed (phone app must be listening)\n");
