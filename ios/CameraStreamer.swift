@@ -119,6 +119,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if saveEncodedStream { openOutputFile() }
         createEncoder(width: 3840, height: 2160)
         session.startRunning()
+        sender.onStatus = { [weak self] message in
+            self?.report(message)
+        }
         sender.start()   // Step 5: begin listening for the Windows receiver
         frameStartUptime = ProcessInfo.processInfo.systemUptime
         report("Camera active • waiting for PC")
@@ -273,6 +276,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if let encoder {
             VTCompressionSessionCompleteFrames(encoder, untilPresentationTimeStamp: .invalid)
         }
+        sender.stop()
         try? outputFile?.close()
     }
 

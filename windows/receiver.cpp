@@ -42,12 +42,19 @@ static int connect_to_device() {
 }
 
 // Naive blocking read-until-full.
-static bool read_exact(int fd, uint8_t *buf, size_t n) {
+static bool read_exact(int fd, uint8_t *buf, size_t n, const char *part) {
     size_t got = 0;
     while (got < n) {
         int r = recv(fd, reinterpret_cast<char *>(buf + got),
                      static_cast<int>(n - got), 0);
-        if (r <= 0) return false;
+        if (r <= 0) {
+            if (r == 0) {
+                fprintf(stderr, "ERROR: iPhone closed connection while reading %s (%zu/%zu bytes)\n", part, got, n);
+            } else {
+                fprintf(stderr, "ERROR: recv %s failed: WSA=%d\n", part, WSAGetLastError());
+            }
+            return false;
+        }
         got += static_cast<size_t>(r);
     }
     return true;
@@ -90,14 +97,14 @@ int main() {
     auto t0 = std::chrono::steady_clock::now();
 
     while (true) {
-        if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE)) break;
+        if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE, "stream header")) break;
         stream_header_t h = {};
         if (!stream_header_read(hdr.data(), &h) || !stream_header_is_valid(&h)) {
             fprintf(stderr, "ERROR: invalid stream header, stream desync\n");
             break;
         }
         std::vector<uint8_t> frame(h.frame_size);
-        if (!read_exact(fd, frame.data(), h.frame_size)) break;
+        if (!read_exact(fd, frame.data(), h.frame_size, "video frame")) break;
 
         if (out) fwrite(frame.data(), 1, h.frame_size, out);
         frames++;
