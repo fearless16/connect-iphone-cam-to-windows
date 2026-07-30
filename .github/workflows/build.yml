@@ -15,7 +15,7 @@ jobs:
   ios:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build unsigned app
         run: |
@@ -47,7 +47,7 @@ jobs:
           zip -r iPhoneCameraStream.ipa Payload
           ls -lh iPhoneCameraStream.ipa
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: iPhoneCameraStream-ipa
           path: iPhoneCameraStream.ipa
@@ -59,7 +59,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -117,7 +117,7 @@ jobs:
           ls -lh iphonecamera.ax
           cp iphonecamera.ax windows-binaries/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-binaries
           path: windows-binaries/
