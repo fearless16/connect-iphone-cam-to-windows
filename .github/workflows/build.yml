@@ -87,7 +87,7 @@ jobs:
             "${{ github.workspace }}/windows/receiver.cpp" \
             -o receiver.exe \
             $(pkg-config --libs libavcodec libavutil libswscale) \
-            -lusbmuxd -lws2_32
+            $(pkg-config --libs libusbmuxd-2.0) -lws2_32
           ls -lh receiver.exe
 
       - name: Build iphonecamera.ax
@@ -99,7 +99,7 @@ jobs:
             "${{ github.workspace }}/windows/iphonecamera.def" \
             -o iphonecamera.ax \
             $(pkg-config --libs libavcodec libavutil libswscale) \
-            -lusbmuxd -lws2_32 -ld3d11 -lstrmiids -lstrmbase
+            $(pkg-config --libs libusbmuxd-2.0) -lws2_32 -ld3d11 -lstrmiids -lstrmbase
           ls -lh iphonecamera.ax
 
       - uses: actions/upload-artifact@v4
