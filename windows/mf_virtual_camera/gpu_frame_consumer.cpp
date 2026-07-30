@@ -140,12 +140,16 @@ HRESULT GpuFrameConsumer::CopyLatest(IMFSample* destination,
         last_sequence_ = 0;
         *discontinuity = true;
     }
-    hr = input_mutex_->AcquireSync(slot.consumer_key, 1000);
-    if (FAILED(hr)) return hr;
+    // Frame Server pulls samples asynchronously. Do not treat the positive
+    // WAIT_TIMEOUT/WAIT_ABANDONED values as success: no copy/release is legal
+    // until AcquireSync returned exactly S_OK.
+    hr = input_mutex_->AcquireSync(slot.consumer_key, 0);
+    if (hr == WAIT_TIMEOUT) return MF_E_TRANSFORM_NEED_MORE_INPUT;
+    if (hr != S_OK) return FAILED(hr) ? hr : E_FAIL;
     context_->CopySubresourceRegion(output_texture.Get(), subresource, 0, 0, 0,
                                     input_texture_.Get(), 0, nullptr);
     hr = input_mutex_->ReleaseSync(slot.producer_key);
-    if (FAILED(hr)) return hr;
+    if (hr != S_OK) return FAILED(hr) ? hr : E_FAIL;
     *timestamp_100ns = slot.timestamp_100ns;
     *duration_100ns = slot.duration_100ns;
     *discontinuity = *discontinuity || (last_sequence_ != 0 && sequence != last_sequence_ + 1);

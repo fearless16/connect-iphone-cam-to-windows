@@ -38,6 +38,7 @@ struct DecodeTelemetry {
     bool first_frame_reported = false;
     uint64_t d3d11_frames = 0;
     uint64_t software_frames = 0;
+    uint64_t gpu_backpressure_drops = 0;
 };
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
@@ -229,7 +230,9 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
                 const uint64_t timestamp_us = frame->best_effort_timestamp == AV_NOPTS_VALUE
                     ? fallback_timestamp_us : static_cast<uint64_t>(frame->best_effort_timestamp);
                 const HRESULT publish_hr = publisher.Publish(frame, timestamp_us);
-                if (FAILED(publish_hr)) {
+                if (publish_hr == S_FALSE) {
+                    ++telemetry.gpu_backpressure_drops;
+                } else if (FAILED(publish_hr)) {
                     fprintf(stderr, "ERROR: GPU frame publish failed: 0x%08lX\n",
                             static_cast<unsigned long>(publish_hr));
                 }
@@ -357,12 +360,13 @@ static void receive_session(int fd) {
                 ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
             const double sourceFps = sourceSeconds > 0
                 ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
-            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu gpu=%llu cpu=%llu frames\n",
+            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu frames\n",
                    frames / s, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
                    static_cast<unsigned long long>(decoded),
                    static_cast<unsigned long long>(decodeTelemetry.d3d11_frames),
-                   static_cast<unsigned long long>(decodeTelemetry.software_frames));
+                   static_cast<unsigned long long>(decodeTelemetry.software_frames),
+                   static_cast<unsigned long long>(decodeTelemetry.gpu_backpressure_drops));
         }
     }
 

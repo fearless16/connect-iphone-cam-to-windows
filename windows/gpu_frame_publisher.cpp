@@ -153,11 +153,15 @@ HRESULT GpuFramePublisher::Publish(const AVFrame* frame, uint64_t source_timesta
     auto* decoder_texture = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
     const uint32_t slot_index = static_cast<uint32_t>(sequence_ % iphone_camera::gpu_transport::kSlotCount);
     const FrameSlot& published = control_->slots[slot_index];
-    HRESULT hr = mutexes_[slot_index]->AcquireSync(published.producer_key, 1000);
-    if (FAILED(hr)) {
+    // A producer must never block the USB/decode loop when OBS is not pulling
+    // samples. WAIT_TIMEOUT is a positive Win32 value, so FAILED(hr) is not a
+    // valid test here; only S_OK grants ownership of the keyed mutex.
+    HRESULT hr = mutexes_[slot_index]->AcquireSync(published.producer_key, 0);
+    if (hr == WAIT_TIMEOUT) return S_FALSE;
+    if (hr != S_OK) {
         fprintf(stderr, "ERROR: GPU ring AcquireSync failed: 0x%08lX\n",
                 static_cast<unsigned long>(hr));
-        return hr;
+        return FAILED(hr) ? hr : E_FAIL;
     }
     D3D11_BOX visible_box{};
     visible_box.right = static_cast<UINT>(frame->width);
@@ -167,10 +171,10 @@ HRESULT GpuFramePublisher::Publish(const AVFrame* frame, uint64_t source_timesta
                                     decoder_texture, static_cast<UINT>(reinterpret_cast<uintptr_t>(frame->data[1])),
                                     &visible_box);
     hr = mutexes_[slot_index]->ReleaseSync(published.consumer_key);
-    if (FAILED(hr)) {
+    if (hr != S_OK) {
         fprintf(stderr, "ERROR: GPU ring ReleaseSync failed: 0x%08lX\n",
                 static_cast<unsigned long>(hr));
-        return hr;
+        return FAILED(hr) ? hr : E_FAIL;
     }
 
     const uint64_t next_sequence = ++sequence_;
