@@ -121,7 +121,7 @@ jobs:
         shell: pwsh
         run: |
           msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
-            /m /p:Configuration=Release /p:Platform=x64
+            /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
 
       - name: Build the virtual-camera registration controller (x64/MSVC)
         shell: pwsh
