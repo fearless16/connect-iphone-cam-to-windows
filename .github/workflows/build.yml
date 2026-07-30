@@ -121,7 +121,7 @@ jobs:
         shell: pwsh
         run: |
           msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
-            /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+            /m /p:Configuration=Release /p:Platform=x64
 
       - name: Build the virtual-camera registration controller (x64/MSVC)
         shell: pwsh
@@ -134,7 +134,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force windows-virtual-camera | Out-Null
-          Copy-Item third_party/VCamSample/x64/Release/VCamSampleSource.dll windows-virtual-camera/IPhoneCameraStreamSource.dll
+          Copy-Item third_party/VCamSample/VCamSampleSource/x64/Release/VCamSampleSource.dll windows-virtual-camera/IPhoneCameraStreamSource.dll
           Copy-Item build/mf-vcam/Release/IPhoneCameraVcamController.exe windows-virtual-camera/
           Copy-Item windows/mf_virtual_camera/INSTALL-OBS.ps1 windows-virtual-camera/
 

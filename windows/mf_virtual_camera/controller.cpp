@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <mfapi.h>
 #include <mfvirtualcamera.h>
+#include <ks.h>
 #include <ksmedia.h>
 #include <cstdio>
 #include <iterator>
