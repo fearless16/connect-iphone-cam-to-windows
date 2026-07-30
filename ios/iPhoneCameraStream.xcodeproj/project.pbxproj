@@ -11,6 +11,7 @@
 		3A0000000000000000000001 /* CameraStreamer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000001 /* CameraStreamer.swift */; };
 		3A0000000000000000000002 /* StreamSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000002 /* StreamSender.swift */; };
 		3A0000000000000000000003 /* StreamHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000003 /* StreamHeader.swift */; };
+		3A0000000000000000000004 /* CameraViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000006 /* CameraViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +21,7 @@
 		2A0000000000000000000003 /* StreamHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamHeader.swift; path = ../shared/StreamHeader.swift; sourceTree = "<group>"; };
 		2A0000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		2A0000000000000000000005 /* iPhoneCameraStream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iPhoneCameraStream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2A0000000000000000000006 /* CameraViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -41,6 +43,7 @@
 				2A0000000000000000000002 /* StreamSender.swift */,
 				2A0000000000000000000003 /* StreamHeader.swift */,
 				2A0000000000000000000004 /* Info.plist */,
+				2A0000000000000000000006 /* CameraViewController.swift */,
 			);
 			name = iPhoneCameraStream;
 			sourceTree = "<group>";
@@ -133,6 +136,7 @@
 				3A0000000000000000000001 /* CameraStreamer.swift in Sources */,
 				3A0000000000000000000002 /* StreamSender.swift in Sources */,
 				3A0000000000000000000003 /* StreamHeader.swift in Sources */,
+				3A0000000000000000000004 /* CameraViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

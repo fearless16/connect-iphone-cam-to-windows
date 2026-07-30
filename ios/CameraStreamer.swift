@@ -10,6 +10,8 @@ import Foundation
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private let session = AVCaptureSession()
+    var captureSession: AVCaptureSession { session }
+    var onStatus: ((String) -> Void)?
     private var encoder: VTCompressionSession?
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
@@ -23,7 +25,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // MARK: - Step 1: permission + session start
     func start() {
         guard AVCaptureDevice.authorizationStatus(for: .video) != .denied else {
-            print("ERROR: camera permission denied")
+            report("Camera permission denied")
             return
         }
 
@@ -33,7 +35,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             position: .back
         )
         guard !cameras.devices.isEmpty else {
-            print("ERROR: no camera found")
+            report("No back camera found")
             return
         }
 
@@ -42,7 +44,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         } else {
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard granted else {
-                    print("ERROR: camera permission denied")
+                    self?.report("Camera permission denied")
                     return
                 }
                 self?.configureSession()
@@ -58,7 +60,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
                                                    for: .video,
                                                    position: .back) else {
-            print("ERROR: no back camera")
+            report("No back camera found")
             session.commitConfiguration()
             return
         }
@@ -81,6 +83,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     format.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= 60 })
             }) else {
                 print("ERROR: this camera does not support 3840x2160 at 60 fps")
+                report("This iPhone does not support 4K at 60 fps")
                 device.unlockForConfiguration()
                 session.commitConfiguration()
                 return
@@ -91,7 +94,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             device.activeVideoMaxFrameDuration = dur
             device.unlockForConfiguration()
         } catch {
-            print("ERROR: lockForConfiguration \(error)")
+            report("Camera configuration failed: \(error.localizedDescription)")
         }
 
         guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
@@ -118,7 +121,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         session.startRunning()
         sender.start()   // Step 5: begin listening for the Windows receiver
         frameStartUptime = ProcessInfo.processInfo.systemUptime
-        print("STATUS: Camera Active")
+        report("Camera active • waiting for PC")
     }
 
     // MARK: - Step 4: VideoToolbox hardware HEVC encoder
@@ -142,7 +145,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             compressionSessionOut: &sessionOut)
 
         guard status == noErr, let enc = sessionOut else {
-            print("ERROR: VTCompressionSessionCreate \(status)")
+            report("HEVC encoder failed: \(status)")
             return
         }
         encoder = enc
@@ -169,7 +172,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                                      sourceFrameRefcon: nil,
                                                      infoFlagsOut: &flags)
         if status != noErr {
-            print("ERROR: VTCompressionSessionEncodeFrame \(status)")
+            report("Frame encoder error: \(status)")
             return
         }
         frameNumber &+= 1
@@ -271,5 +274,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             VTCompressionSessionCompleteFrames(encoder, untilPresentationTimeStamp: .invalid)
         }
         try? outputFile?.close()
+    }
+
+    private func report(_ message: String) {
+        print("STATUS: \(message)")
+        DispatchQueue.main.async { [weak self] in
+            self?.onStatus?(message)
+        }
     }
 }

@@ -27,6 +27,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY=""
 
+      - name: Check iPhone preview source contract
+        run: |
+          sh tests/ios_preview_source_contract.sh \
+            ios/AppDelegate.swift \
+            ios/CameraViewController.swift \
+            ios/iPhoneCameraStream.xcodeproj/project.pbxproj
+
       - name: Package unsigned IPA (TrollStore-ready)
         run: |
           APP="$GITHUB_WORKSPACE/ios/build/Release-iphoneos/iPhoneCameraStream.app"
