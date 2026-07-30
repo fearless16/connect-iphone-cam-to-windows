@@ -107,7 +107,7 @@ jobs:
 
       - name: Build experimental iphonecamera.ax
         run: |
-          g++ -std=c++20 -O2 -shared -fpermissive -fext-numeric-literals -DNOMINMAX -DUNICODE -D_UNICODE \
+          g++ -std=c++20 -O2 -shared -fpermissive -fms-extensions -DNOMINMAX -DUNICODE -D_UNICODE \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/virtual_camera.cpp" \
