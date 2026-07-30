@@ -24,33 +24,60 @@ final class StreamSender {
     private var sentFrameCount: UInt64 = 0
     private var droppedFrameCount: UInt64 = 0
     private var sentFrameStart = ProcessInfo.processInfo.systemUptime
+    private var desiredRunning = false
+    private var listenerRetryAttempt = 0
 
     func start() {
-        // A foreground transition can call start again. Keep the original
-        // listening socket alive rather than creating a competing listener.
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.desiredRunning = true
+            self.startOnQueue()
+        }
+    }
+
+    private func startOnQueue() {
+        dispatchPrecondition(condition: .onQueue(queue))
         guard listener == nil else { return }
         let params = NWParameters.tcp
+        let newListener: NWListener
         do {
-            listener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
+            newListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
         } catch {
             print("ERROR: NWListener \(error)")
+            scheduleRestart()
             return
         }
-        listener?.stateUpdateHandler = { [weak self] state in
+        listener = newListener
+        newListener.stateUpdateHandler = { [weak self, weak newListener] state in
+            guard let self, let newListener else { return }
             switch state {
             case .ready:
-                self?.report("USB stream service ready")
+                guard self.listener === newListener else { return }
+                self.listenerRetryAttempt = 0
+                self.report("USB stream service ready")
             case .waiting(let error):
-                self?.report("USB listener waiting: \(error.localizedDescription)")
+                self.report("USB listener waiting: \(error.localizedDescription)")
             case .failed(let error):
-                self?.report("USB listener failed: \(error.localizedDescription)")
+                guard self.listener === newListener else { return }
+                self.report("USB listener failed: \(error.localizedDescription)")
+                self.connection?.cancel()
+                self.connection = nil
+                self.connectionReady = false
+                self.sendInFlight = false
+                self.pendingPackets.removeAll(keepingCapacity: true)
+                self.listener = nil
+                newListener.cancel()
+                self.scheduleRestart()
             case .cancelled:
-                self?.report("USB listener stopped")
+                guard self.listener === newListener else { return }
+                self.listener = nil
+                self.report("USB listener stopped")
+                self.scheduleRestart()
             default:
                 break
             }
         }
-        listener?.newConnectionHandler = { [weak self] conn in
+        newListener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
             self.connection?.cancel()
             self.connection = conn
@@ -91,8 +118,19 @@ final class StreamSender {
             }
             conn.start(queue: self.queue)
         }
-        listener?.start(queue: queue)
+        newListener.start(queue: queue)
         print("SENDER: listening on port \(StreamSender.port)")
+    }
+
+    private func scheduleRestart() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard desiredRunning, listener == nil else { return }
+        let delay = min(30.0, pow(2.0, Double(listenerRetryAttempt)))
+        listenerRetryAttempt = min(listenerRetryAttempt + 1, 5)
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.desiredRunning, self.listener == nil else { return }
+            self.startOnQueue()
+        }
     }
 
     /// Send a complete protocol packet (header + Annex-B frame).
@@ -129,6 +167,8 @@ final class StreamSender {
 
     func stop() {
         queue.async { [weak self] in
+            self?.desiredRunning = false
+            self?.listenerRetryAttempt = 0
             self?.connection?.cancel()
             self?.connection = nil
             self?.connectionReady = false

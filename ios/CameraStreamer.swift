@@ -22,6 +22,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var stopped = false
     private var videoDevice: AVCaptureDevice?
     private var notificationTokens: [NSObjectProtocol] = []
+    private var pressureObservation: NSKeyValueObservation?
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
     // Leave it off for live streaming; enable only while diagnosing encoding.
@@ -42,10 +43,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var usbFPS = 0.0
     private var captureDropCount: UInt64 = 0
     private var transportDropCount: UInt64 = 0
+    private var thermalTelemetry = "THERMAL nominal"
+    private var pressureTelemetry = "PRESSURE nominal"
     var onDiagnostics: ((String) -> Void)?
 
     override init() {
         super.init()
+        _ = ProcessInfo.processInfo.thermalState
         let center = NotificationCenter.default
         notificationTokens = [
             center.addObserver(forName: UIApplication.didBecomeActiveNotification,
@@ -67,6 +71,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                object: session,
                                queue: .main) { [weak self] notification in
                 self?.handleSessionRuntimeError(notification)
+            },
+            center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification,
+                               object: ProcessInfo.processInfo,
+                               queue: .main) { [weak self] _ in
+                self?.handleThermalStateChange()
             }
         ]
     }
@@ -128,6 +137,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.addInput(input)
         videoDevice = device
+        pressureObservation = device.observe(\.systemPressureState, options: [.new]) { [weak self] _, _ in
+            self?.handleSystemPressureChange()
+        }
+        handleThermalStateChange()
+        handleSystemPressureChange()
 
         let output = AVCaptureVideoDataOutput()
         output.videoSettings = [
@@ -212,7 +226,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         ]
         if let failed = propertyStatuses.first(where: { $0.1 != noErr }) {
             VTCompressionSessionInvalidate(enc)
-            encoderSetupFailed = true
+            setEncoderSetupFailed(true)
             report("HEVC encoder setting failed (\(failed.0)): \(failed.1)")
             return
         }
@@ -220,7 +234,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(enc)
         guard prepareStatus == noErr else {
             VTCompressionSessionInvalidate(enc)
-            encoderSetupFailed = true
+            setEncoderSetupFailed(true)
             report("HEVC encoder prepare failed: \(prepareStatus)")
             return
         }
@@ -245,7 +259,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         recordSensorFrame(pts)
-        if activeEncoder() == nil && !encoderSetupFailed {
+        if activeEncoder() == nil && !isEncoderSetupFailed() {
             createEncoder(width: width, height: height)
         }
         guard let enc = activeEncoder() else { return }
@@ -476,8 +490,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func publishDiagnostics() {
         telemetryLock.lock()
-        let text = String(format: "%@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • transport %llu",
-                          activeFormatTelemetry, sensorFPS, encoderFPS, usbFPS,
+        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • transport %llu",
+                          activeFormatTelemetry, thermalTelemetry, pressureTelemetry,
+                          sensorFPS, encoderFPS, usbFPS,
                           captureDropCount, transportDropCount)
         telemetryLock.unlock()
         DispatchQueue.main.async { [weak self] in self?.onDiagnostics?(text) }
@@ -540,6 +555,18 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return encoder
     }
 
+    private func isEncoderSetupFailed() -> Bool {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return encoderSetupFailed
+    }
+
+    private func setEncoderSetupFailed(_ failed: Bool) {
+        encoderStateLock.lock()
+        encoderSetupFailed = failed
+        encoderStateLock.unlock()
+    }
+
     private func invalidateEncoder(reason: String?) {
         encoderStateLock.lock()
         let oldEncoder = encoder
@@ -574,6 +601,60 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             if error?.code == .mediaServicesWereReset || !self.session.isRunning {
                 self.recoverSession(reason: "Camera runtime reset")
             }
+        }
+    }
+
+    private func handleThermalStateChange() {
+        let thermalState = ProcessInfo.processInfo.thermalState
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let label: String
+            switch thermalState {
+            case .nominal: label = "THERMAL nominal"
+            case .fair: label = "THERMAL fair"
+            case .serious: label = "THERMAL serious • 4K60 at risk"
+            case .critical: label = "THERMAL critical • camera may stop"
+            @unknown default: label = "THERMAL unknown"
+            }
+            self.setThermalTelemetry(label)
+        }
+    }
+
+    private func handleSystemPressureChange() {
+        guard let device = videoDevice else { return }
+        let pressure = device.systemPressureState.level
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let label: String
+            switch pressure {
+            case .nominal: label = "PRESSURE nominal"
+            case .fair: label = "PRESSURE fair"
+            case .serious: label = "PRESSURE serious • 4K60 at risk"
+            case .critical: label = "PRESSURE critical • camera may stop"
+            case .shutdown: label = "PRESSURE shutdown • camera interrupted"
+            @unknown default: label = "PRESSURE unknown"
+            }
+            self.setPressureTelemetry(label)
+        }
+    }
+
+    private func setThermalTelemetry(_ value: String) {
+        telemetryLock.lock()
+        thermalTelemetry = value
+        telemetryLock.unlock()
+        publishDiagnostics()
+        if value.contains("risk") || value.contains("critical") || value.contains("shutdown") {
+            report(value)
+        }
+    }
+
+    private func setPressureTelemetry(_ value: String) {
+        telemetryLock.lock()
+        pressureTelemetry = value
+        telemetryLock.unlock()
+        publishDiagnostics()
+        if value.contains("risk") || value.contains("critical") || value.contains("shutdown") {
+            report(value)
         }
     }
 
