@@ -66,13 +66,18 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/Windows-classic-samples
           echo "BASECLASSES_DIR=$(pwd)/Windows-classic-samples/Samples/Win7Samples/multimedia/directshow/baseclasses" >> $GITHUB_ENV
 
-      - name: Build receiver.exe (transport test)
+      - name: Build receiver.exe and portable contract tests
         run: |
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/tests/protocol_selftest.cpp" \
             -o protocol_selftest.exe
           ./protocol_selftest.exe
+          g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/virtual_camera_contract_test.cpp" \
+            -o virtual_camera_contract_test.exe
+          ./virtual_camera_contract_test.exe
           g++ -std=c++20 -O2 \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
@@ -82,17 +87,17 @@ jobs:
             -lusbmuxd -lws2_32
           ls -lh receiver.exe
 
-      - name: Build iphonecamera.ax (best-effort)
+      - name: Build iphonecamera.ax
         run: |
-          set +e
           g++ -std=c++20 -O2 -shared -DNOMINMAX \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/virtual_camera.cpp" \
+            "${{ github.workspace }}/windows/iphonecamera.def" \
             -o iphonecamera.ax \
             $(pkg-config --libs libavcodec libavutil libswscale) \
             -lusbmuxd -lws2_32 -ld3d11 -lstrmiids -lstrmbase
-          ls -lh iphonecamera.ax 2>/dev/null || echo "AX_BUILD_SKIPPED"
+          ls -lh iphonecamera.ax
 
       - uses: actions/upload-artifact@v4
         with:

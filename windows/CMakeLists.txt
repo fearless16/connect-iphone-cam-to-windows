@@ -4,6 +4,13 @@ project(iPhoneCameraStream CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(virtual_camera_contract_test ../tests/virtual_camera_contract_test.cpp)
+    target_include_directories(virtual_camera_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME virtual_camera_contract_test COMMAND virtual_camera_contract_test)
+endif()
+
 # ---- FFmpeg (install via vcpkg: `vcpkg install ffmpeg`) ----
 find_package(FFMPEG REQUIRED)
 # Fallback if find_package above is unavailable:
@@ -41,6 +48,7 @@ target_link_libraries(receiver PRIVATE
 # ============ Virtual camera DirectShow filter (OBS source) ============
 add_library(iphonecamera MODULE virtual_camera.cpp)
 set_target_properties(iphonecamera PROPERTIES PREFIX "" SUFFIX ".ax")
+target_link_options(iphonecamera PRIVATE "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/iphonecamera.def")
 target_include_directories(iphonecamera PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
     ${USBMUXD_INCLUDE_DIR}
