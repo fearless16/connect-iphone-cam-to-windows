@@ -88,22 +88,43 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     control_->adapter.low_part = adapter_desc.AdapterLuid.LowPart;
     control_->adapter.high_part = adapter_desc.AdapterLuid.HighPart;
 
-    D3D11_TEXTURE2D_DESC ring_desc = source_desc;
+    // Do not clone the decoder descriptor: it carries decoder-only flags and
+    // a coded-size array layout that cannot be turned into a shared texture.
+    D3D11_TEXTURE2D_DESC ring_desc{};
     ring_desc.Width = static_cast<UINT>(frame->width);
     ring_desc.Height = static_cast<UINT>(frame->height);
     ring_desc.MipLevels = 1;
     ring_desc.ArraySize = 1;
-    ring_desc.BindFlags = 0;
-    ring_desc.CPUAccessFlags = 0;
+    ring_desc.Format = DXGI_FORMAT_NV12;
+    ring_desc.SampleDesc.Count = 1;
+    ring_desc.SampleDesc.Quality = 0;
     ring_desc.Usage = D3D11_USAGE_DEFAULT;
+    ring_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    ring_desc.CPUAccessFlags = 0;
     ring_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     for (uint32_t i = 0; i < iphone_camera::gpu_transport::kSlotCount; ++i) {
-        if (FAILED(device_->CreateTexture2D(&ring_desc, nullptr, &textures_[i])) ||
-            FAILED(textures_[i].As(&mutexes_[i]))) return E_FAIL;
+        HRESULT create_hr = device_->CreateTexture2D(&ring_desc, nullptr, &textures_[i]);
+        if (FAILED(create_hr)) {
+            fprintf(stderr, "ERROR: GPU ring CreateTexture2D failed: 0x%08lX\n",
+                    static_cast<unsigned long>(create_hr));
+            return create_hr;
+        }
+        HRESULT mutex_hr = textures_[i].As(&mutexes_[i]);
+        if (FAILED(mutex_hr)) {
+            fprintf(stderr, "ERROR: GPU ring IDXGIKeyedMutex query failed: 0x%08lX\n",
+                    static_cast<unsigned long>(mutex_hr));
+            return mutex_hr;
+        }
         Microsoft::WRL::ComPtr<IDXGIResource> resource;
         HANDLE shared_handle = nullptr;
-        if (FAILED(textures_[i].As(&resource)) || FAILED(resource->GetSharedHandle(&shared_handle)))
-            return E_FAIL;
+        HRESULT resource_hr = textures_[i].As(&resource);
+        if (FAILED(resource_hr)) return resource_hr;
+        HRESULT share_hr = resource->GetSharedHandle(&shared_handle);
+        if (FAILED(share_hr)) {
+            fprintf(stderr, "ERROR: GPU ring GetSharedHandle failed: 0x%08lX\n",
+                    static_cast<unsigned long>(share_hr));
+            return share_hr;
+        }
         control_->slots[i].shared_texture_handle =
             static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shared_handle));
         control_->slots[i].producer_key = 0;
@@ -124,7 +145,11 @@ HRESULT GpuFramePublisher::Publish(const AVFrame* frame, uint64_t source_timesta
     const uint32_t slot_index = static_cast<uint32_t>(sequence_ % iphone_camera::gpu_transport::kSlotCount);
     const FrameSlot& published = control_->slots[slot_index];
     HRESULT hr = mutexes_[slot_index]->AcquireSync(published.producer_key, 1000);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        fprintf(stderr, "ERROR: GPU ring AcquireSync failed: 0x%08lX\n",
+                static_cast<unsigned long>(hr));
+        return hr;
+    }
     D3D11_BOX visible_box{};
     visible_box.right = static_cast<UINT>(frame->width);
     visible_box.bottom = static_cast<UINT>(frame->height);
