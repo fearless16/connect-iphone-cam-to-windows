@@ -35,6 +35,7 @@ jobs:
             ios/iPhoneCameraStream.xcodeproj/project.pbxproj
           sh tests/stream_sender_source_contract.sh ios/StreamSender.swift
           sh tests/encoder_setup_source_contract.sh ios/CameraStreamer.swift
+          sh tests/hevc_join_source_contract.sh ios/CameraStreamer.swift ios/StreamSender.swift
 
       - name: Package unsigned IPA (TrollStore-ready)
         run: |

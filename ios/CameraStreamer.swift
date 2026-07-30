@@ -15,6 +15,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var encoder: VTCompressionSession?
     private var encoderSetupFailed = false
     private var reportedNon4KFrame = false
+    private let encoderStateLock = NSLock()
+    private var forceNextKeyFrame = false
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
     // Leave it off for live streaming; enable only while diagnosing encoding.
@@ -126,6 +128,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.onStatus = { [weak self] message in
             self?.report(message)
         }
+        sender.onClientConnected = { [weak self] in
+            self?.requestKeyFrame()
+        }
         sender.start()   // Step 5: begin listening for the Windows receiver
         frameStartUptime = ProcessInfo.processInfo.systemUptime
         report("Camera active • waiting for PC")
@@ -201,12 +206,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         guard let enc = encoder else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let frameProperties: CFDictionary? = consumeForcedKeyFrame()
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame as String: true] as CFDictionary
+            : nil
         var flags: VTEncodeInfoFlags = []
         let status = VTCompressionSessionEncodeFrame(enc,
                                                      imageBuffer: px,
                                                      presentationTimeStamp: pts,
                                                      duration: .invalid,
-                                                     frameProperties: nil,
+                                                     frameProperties: frameProperties,
                                                      sourceFrameRefcon: nil,
                                                      infoFlagsOut: &flags)
         if status != noErr {
@@ -232,27 +240,38 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                                                     createIfNecessary: false) as? [[CFString: Any]]
         let isKeyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
         if isKeyframe {
-            var count: Int = 0
-            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            var parameterSetCount = 0
+            var nalUnitHeaderLength = 0
+            var parameterSetPointer: UnsafePointer<UInt8>?
+            var parameterSetSize = 0
+            let status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
                 desc,
                 parameterSetIndex: 0,
-                parameterSetPointerOut: nil,
-                parameterSetSizeOut: nil,
-                parameterSetCountOut: &count,
-                nalUnitHeaderLengthOut: nil)
-            for i in 0..<count {
-                var ptr: UnsafePointer<UInt8>?
-                var len = 0
-                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    desc,
-                    parameterSetIndex: i,
-                    parameterSetPointerOut: &ptr,
-                    parameterSetSizeOut: &len,
-                    parameterSetCountOut: nil,
-                    nalUnitHeaderLengthOut: nil)
-                if let ptr, len > 0 {
+                parameterSetPointerOut: &parameterSetPointer,
+                parameterSetSizeOut: &parameterSetSize,
+                parameterSetCountOut: &parameterSetCount,
+                nalUnitHeaderLengthOut: &nalUnitHeaderLength)
+            guard status == noErr else {
+                report("HEVC parameter-set read failed: \(status)")
+                return
+            }
+            for index in 0..<parameterSetCount {
+                if index > 0 {
+                    let nextStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                        desc,
+                        parameterSetIndex: index,
+                        parameterSetPointerOut: &parameterSetPointer,
+                        parameterSetSizeOut: &parameterSetSize,
+                        parameterSetCountOut: nil,
+                        nalUnitHeaderLengthOut: nil)
+                    guard nextStatus == noErr else {
+                        report("HEVC parameter-set read failed: \(nextStatus)")
+                        return
+                    }
+                }
+                if let parameterSetPointer, parameterSetSize > 0 {
                     annexB.append(contentsOf: startCode)
-                    annexB.append(Data(bytes: ptr, count: len))
+                    annexB.append(Data(bytes: parameterSetPointer, count: parameterSetSize))
                 }
             }
         }
@@ -288,6 +307,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.send(frameNumber: frameNumber,
                     timestampUs: monotonicUs(),
                     codec: StreamCodec.hevc.rawValue,
+                    isKeyframe: isKeyframe,
                     frame: annexB)
     }
 
@@ -320,5 +340,19 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
         }
+    }
+
+    private func requestKeyFrame() {
+        encoderStateLock.lock()
+        forceNextKeyFrame = true
+        encoderStateLock.unlock()
+    }
+
+    private func consumeForcedKeyFrame() -> Bool {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        let shouldForce = forceNextKeyFrame
+        forceNextKeyFrame = false
+        return shouldForce
     }
 }

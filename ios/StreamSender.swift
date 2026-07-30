@@ -11,10 +11,12 @@ final class StreamSender {
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "sender")
     var onStatus: ((String) -> Void)?
+    var onClientConnected: (() -> Void)?
     // Keep at most one packet pending in Network.framework. At 4K60, queueing
     // encoded frames trades a brief stall for seconds of latency and memory use.
     private var sendInFlight = false
     private var connectionReady = false
+    private var waitingForKeyFrame = true
     private var sentFrameCount: UInt64 = 0
 
     func start() {
@@ -45,6 +47,7 @@ final class StreamSender {
             self.connection = conn
             self.connectionReady = false
             self.sendInFlight = false
+            self.waitingForKeyFrame = true
             self.sentFrameCount = 0
             conn.stateUpdateHandler = { [weak self, weak conn] state in
                 self?.queue.async {
@@ -52,6 +55,8 @@ final class StreamSender {
                     switch state {
                     case .ready:
                         self.connectionReady = true
+                        self.waitingForKeyFrame = true
+                        self.onClientConnected?()
                         self.report("PC connected • starting video")
                     case .waiting(let error):
                         self.report("PC connection waiting: \(error.localizedDescription)")
@@ -77,7 +82,7 @@ final class StreamSender {
     }
 
     /// Send a complete protocol packet (header + Annex-B frame).
-    func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, frame: Data) {
+    func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, isKeyframe: Bool, frame: Data) {
         guard frame.count <= Int(UInt32.max) else {
             print("ERROR: encoded frame exceeds protocol limit")
             return
@@ -96,6 +101,8 @@ final class StreamSender {
         queue.async { [weak self] in
             guard let self, let conn = self.connection,
                   self.connectionReady, !self.sendInFlight else { return }
+            guard !self.waitingForKeyFrame || isKeyframe else { return }
+            if isKeyframe { self.waitingForKeyFrame = false }
             self.sendInFlight = true
             conn.send(content: packet, completion: .contentProcessed { [weak self, weak conn] error in
                 self?.queue.async {
