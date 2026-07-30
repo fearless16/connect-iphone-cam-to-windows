@@ -120,8 +120,15 @@ jobs:
       - name: Build the native Frame Server source DLL (x64/MSVC)
         shell: pwsh
         run: |
-          msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
-            /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+          $buildOutput = & msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
+            /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 2>&1
+          $buildExitCode = $LASTEXITCODE
+          $buildOutput | ForEach-Object { Write-Host $_ }
+          if ($buildExitCode -ne 0) {
+            $tail = ($buildOutput | Select-Object -Last 20) -join ' | '
+            Write-Host "::error title=Virtual-camera MSVC build::$tail"
+            exit $buildExitCode
+          }
 
       - name: Build the virtual-camera registration controller (x64/MSVC)
         shell: pwsh
