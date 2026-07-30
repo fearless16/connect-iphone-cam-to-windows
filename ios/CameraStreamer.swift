@@ -241,7 +241,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let isKeyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
         if isKeyframe {
             var parameterSetCount = 0
-            var nalUnitHeaderLength = 0
+            var nalUnitHeaderLength: Int32 = 0
             var parameterSetPointer: UnsafePointer<UInt8>?
             var parameterSetSize = 0
             let status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
