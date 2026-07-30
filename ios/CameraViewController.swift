@@ -24,7 +24,7 @@ final class CameraViewController: UIViewController {
         previewLayer.videoGravity = .resizeAspectFill
         view.layer.addSublayer(previewLayer)
 
-        statusLabel.text = "Starting camera…"
+        statusLabel.text = "iPhone Camera Stream 0.3\nStarting camera…"
         statusLabel.textColor = .white
         statusLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         statusLabel.font = .preferredFont(forTextStyle: .headline)
