@@ -10,6 +10,7 @@ import Foundation
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private let session = AVCaptureSession()
+    private let sessionQueue = DispatchQueue(label: "camera.session")
     var captureSession: AVCaptureSession { session }
     var onStatus: ((String) -> Void)?
     private var encoder: VTCompressionSession?
@@ -19,6 +20,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var forceNextKeyFrame = false
     private var isConfigured = false
     private var stopped = false
+    private var videoDevice: AVCaptureDevice?
     private var notificationTokens: [NSObjectProtocol] = []
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
@@ -54,7 +56,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             center.addObserver(forName: .AVCaptureSessionWasInterrupted,
                                object: session,
                                queue: .main) { [weak self] _ in
-                self?.invalidateEncoder(reason: "Camera interrupted")
+                self?.handleSessionInterruption()
             },
             center.addObserver(forName: .AVCaptureSessionInterruptionEnded,
                                object: session,
@@ -80,31 +82,23 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
 
-        let cameras = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera],
-            mediaType: .video,
-            position: .back
-        )
-        guard !cameras.devices.isEmpty else {
-            report("No back camera found")
-            return
-        }
-
         if AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
-            configureSession()
+            sessionQueue.async { [weak self] in self?.configureSession() }
         } else {
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard granted else {
                     self?.report("Camera permission denied")
                     return
                 }
-                self?.configureSession()
+                self?.sessionQueue.async { self?.configureSession() }
             }
         }
     }
 
     // MARK: - Step 2/3: enumerate + configure 3840x2160@60 HEVC
     private func configureSession() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard !isConfigured else { return }
         session.beginConfiguration()
         // An explicit device format owns resolution/framerate. A regular
         // session preset is allowed to replace that format with its default.
@@ -133,6 +127,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
         session.addInput(input)
+        videoDevice = device
 
         let output = AVCaptureVideoDataOutput()
         output.videoSettings = [
@@ -147,31 +142,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.addOutput(output)
 
-        // Adding an AVCaptureDeviceInput resets its active format and its
-        // min/max frame durations. Configure the final, attached input within
-        // the same begin/commit transaction so 4K60 survives session startup.
-        do {
-            try device.lockForConfiguration()
-            guard let fmt = device.formats.first(where: { format in
-                let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                return d.width == 3840 && d.height == 2160 &&
-                    format.videoSupportedFrameRateRanges.contains(where: {
-                        $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
-                    })
-            }) else {
-                print("ERROR: this camera does not support 3840x2160 at 60 fps")
-                report("This iPhone does not support 4K at 60 fps")
-                device.unlockForConfiguration()
-                session.commitConfiguration()
-                return
-            }
-            device.activeFormat = fmt
-            let duration = CMTime(value: 1, timescale: 60)
-            device.activeVideoMinFrameDuration = duration
-            device.activeVideoMaxFrameDuration = duration
-            device.unlockForConfiguration()
-        } catch {
-            report("Camera configuration failed: \(error.localizedDescription)")
+        // Input attachment resets the format and duration. Apply them after
+        // attachment, within this configuration transaction.
+        guard apply4K60Format(to: device) else {
             session.commitConfiguration()
             return
         }
@@ -420,6 +393,32 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                        minimumFps, maximumFps))
     }
 
+    private func apply4K60Format(to device: AVCaptureDevice) -> Bool {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            guard let format = device.formats.first(where: { format in
+                let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                return dimensions.width == 3840 && dimensions.height == 2160 &&
+                    format.videoSupportedFrameRateRanges.contains(where: {
+                        $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
+                    })
+            }) else {
+                report("This iPhone does not support 4K at 60 fps")
+                return false
+            }
+            device.activeFormat = format
+            let duration = CMTime(value: 1, timescale: 60)
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+            return true
+        } catch {
+            report("Camera configuration failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     private func resetTelemetry(format: String) {
         telemetryLock.lock()
         activeFormatTelemetry = format
@@ -493,11 +492,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     func stop() {
-        stopped = true
-        session.stopRunning()
-        invalidateEncoder(reason: nil)
-        sender.stop()
-        try? outputFile?.close()
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.stopped = true
+            self.session.stopRunning()
+            self.invalidateEncoder(reason: nil)
+            self.sender.stop()
+            try? self.outputFile?.close()
+            self.outputFile = nil
+        }
     }
 
     private func report(_ message: String) {
@@ -541,24 +544,41 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func resumeAfterForeground() {
-        guard isConfigured, !stopped else { return }
-        invalidateEncoder(reason: nil)
-        if !session.isRunning { session.startRunning() }
-        sender.start()
-        report("Camera resumed • waiting for encoder")
+        sessionQueue.async { [weak self] in
+            self?.recoverSession(reason: "Camera resumed • waiting for encoder")
+        }
+    }
+
+    private func handleSessionInterruption() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.stopped else { return }
+            self.invalidateEncoder(reason: "Camera interrupted")
+        }
     }
 
     private func handleSessionRuntimeError(_ notification: Notification) {
-        guard isConfigured, !stopped else { return }
         let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError
-        invalidateEncoder(reason: "Camera runtime reset")
-        // A media-services reset invalidates the capture pipeline without a
-        // foreground notification. Restarting the configured session here
-        // makes camera focus switches and interruption recovery self-healing.
-        if error?.code == .mediaServicesWereReset || !session.isRunning {
-            session.startRunning()
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.stopped else { return }
+            self.invalidateEncoder(reason: "Camera runtime reset")
+            if error?.code == .mediaServicesWereReset || !self.session.isRunning {
+                self.recoverSession(reason: "Camera runtime reset")
+            }
         }
+    }
+
+    private func recoverSession(reason: String) {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard isConfigured, !stopped, let device = videoDevice else { return }
+        session.beginConfiguration()
+        let configured = apply4K60Format(to: device)
+        session.commitConfiguration()
+        guard configured else { return }
+        invalidateEncoder(reason: nil)
+        if !session.isRunning { session.startRunning() }
+        refreshActiveFormatTelemetry(device)
         sender.start()
         requestKeyFrame()
+        report(reason)
     }
 }
