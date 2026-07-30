@@ -3,6 +3,7 @@
 // of verified end-to-end 4K60 performance.
 
 #include <winsock2.h>
+#include "directshow_compat.h"
 #include <streams.h>
 #include <amvideo.h>
 #include <uuids.h>
