@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+set -eu
+
+receiver="$1"
+
+# The receiver must be a durable USB-network bridge, not a console program
+# that exits before the user opens the iPhone app.
+grep -q 'WSAStartup' "$receiver"
+grep -q 'discover_iphone_usb_host' "$receiver"
+grep -q 'IPHONE_CAMERA_HOST' "$receiver"
+grep -q 'connect_tcp' "$receiver"
+grep -q 'USB network' "$receiver"
+grep -q 'select_d3d11_format' "$receiver"
+grep -q 'AV_PIX_FMT_D3D11' "$receiver"
+grep -q 'for (;;)' "$receiver"

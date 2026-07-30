@@ -78,6 +78,8 @@ jobs:
         run: |
           sh "${{ github.workspace }}/tests/virtual_camera_source_contract.sh" \
             "${{ github.workspace }}/windows/virtual_camera.cpp"
+          sh "${{ github.workspace }}/tests/receiver_source_contract.sh" \
+            "${{ github.workspace }}/windows/receiver.cpp"
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/tests/protocol_selftest.cpp" \
@@ -93,7 +95,7 @@ jobs:
             "${{ github.workspace }}/windows/receiver.cpp" \
             -o receiver.exe \
             $(pkg-config --libs libavcodec libavutil libswscale) \
-            $(pkg-config --libs libusbmuxd-2.0) -lws2_32
+            $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32
           ls -lh receiver.exe
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/

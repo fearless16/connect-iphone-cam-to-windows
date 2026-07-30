@@ -8,7 +8,13 @@
 #include <cstring>
 #include <vector>
 #include <chrono>
+#include <thread>
+#include <string>
+#include <cwchar>
+#include <cstdlib>
 #include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -17,12 +23,85 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/pixfmt.h>
 }
 
 #define DEVICE_PORT 12345u
 static constexpr bool kSaveReceivedStream = false;
 
-static int connect_to_device() {
+static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
+    for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
+        if (*format == AV_PIX_FMT_D3D11) return *format;
+    }
+    fprintf(stderr, "WARN: HEVC decoder did not offer D3D11 output; using software decode\n");
+    return formats[0];
+}
+
+static int connect_tcp(const char* host) {
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char port[6]{};
+    std::snprintf(port, sizeof(port), "%u", DEVICE_PORT);
+    addrinfo* results = nullptr;
+    if (getaddrinfo(host, port, &hints, &results) != 0) return -1;
+    int socket = -1;
+    for (addrinfo* item = results; item; item = item->ai_next) {
+        SOCKET candidate = ::socket(item->ai_family, item->ai_socktype, item->ai_protocol);
+        if (candidate == INVALID_SOCKET) continue;
+        const DWORD timeoutMs = 1500;
+        setsockopt(candidate, SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+        setsockopt(candidate, SOL_SOCKET, SO_SNDTIMEO,
+                   reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+        if (::connect(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0) {
+            socket = static_cast<int>(candidate);
+            break;
+        }
+        closesocket(candidate);
+    }
+    freeaddrinfo(results);
+    if (socket >= 0) printf("INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
+    return socket;
+}
+
+static std::string discover_iphone_usb_host() {
+    ULONG bytes = 16 * 1024;
+    std::vector<uint8_t> storage(bytes);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+    ULONG status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
+                                        nullptr, adapters, &bytes);
+    if (status == ERROR_BUFFER_OVERFLOW) {
+        storage.resize(bytes);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+        status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
+                                      nullptr, adapters, &bytes);
+    }
+    if (status != NO_ERROR) return {};
+
+    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+        const wchar_t* name = adapter->FriendlyName ? adapter->FriendlyName : L"";
+        const wchar_t* description = adapter->Description ? adapter->Description : L"";
+        if (!wcsstr(name, L"Apple") && !wcsstr(description, L"Apple")) continue;
+        for (auto* gateway = adapter->FirstGatewayAddress; gateway; gateway = gateway->Next) {
+            if (gateway->Address.lpSockaddr->sa_family != AF_INET) continue;
+            char host[INET_ADDRSTRLEN]{};
+            const auto* address = reinterpret_cast<const sockaddr_in*>(gateway->Address.lpSockaddr);
+            if (InetNtopA(AF_INET, &address->sin_addr, host, sizeof(host))) return host;
+        }
+    }
+    return {};
+}
+
+static int connect_to_device(const char* usbNetworkHost) {
+    // Personal Hotspot over USB creates a normal high-bandwidth Ethernet link.
+    // This is the supported Windows transport and works with the Apple Devices
+    // app; it does not depend on the incomplete Windows usbmuxd implementation.
+    const int tcpSocket = connect_tcp(usbNetworkHost);
+    if (tcpSocket >= 0) return tcpSocket;
+
+    // Older Apple Mobile Device Support installations can still use the
+    // libusbmuxd implementation. It is intentionally only a fallback.
     usbmuxd_device_info_t *list = nullptr;
     int count = usbmuxd_get_device_list(&list);
     if (count <= 0) {
@@ -70,8 +149,9 @@ static AVCodecContext *init_decoder() {
     AVBufferRef *hw = nullptr;
     if (av_hwdevice_ctx_create(&hw, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) == 0) {
         ctx->hw_device_ctx = av_buffer_ref(hw);
+        ctx->get_format = select_d3d11_format;
         av_buffer_unref(&hw);
-        printf("INFO: D3D11VA enabled\n");
+        printf("INFO: D3D11VA requested\n");
     } else {
         printf("WARN: D3D11VA unavailable, falling back to software\n");
     }
@@ -84,10 +164,7 @@ static AVCodecContext *init_decoder() {
     return ctx;
 }
 
-int main() {
-    int fd = connect_to_device();
-    if (fd < 0) return 1;
-
+static void receive_session(int fd) {
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     AVCodecContext *dec = init_decoder();
@@ -101,6 +178,10 @@ int main() {
         stream_header_t h = {};
         if (!stream_header_read(hdr.data(), &h) || !stream_header_is_valid(&h)) {
             fprintf(stderr, "ERROR: invalid stream header, stream desync\n");
+            break;
+        }
+        if (h.codec != STREAM_CODEC_HEVC) {
+            fprintf(stderr, "ERROR: unsupported stream codec %u\n", static_cast<unsigned>(h.codec));
             break;
         }
         std::vector<uint8_t> frame(h.frame_size);
@@ -132,8 +213,35 @@ int main() {
 
     if (out) fclose(out);
     if (dec) avcodec_free_context(&dec);
-    closesocket(fd);
     printf("INFO: done, received %llu frames\n",
            static_cast<unsigned long long>(frames));
-    return 0;
+}
+
+int main(int argc, char** argv) {
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        fprintf(stderr, "ERROR: WSAStartup failed\n");
+        return 1;
+    }
+
+    // Keep running across app restarts, lock/unlock recovery, and USB reconnects.
+    // A double-clicked receiver must wait for the iPhone instead of flashing away.
+    const char* environmentHost = std::getenv("IPHONE_CAMERA_HOST");
+    const std::string discoveredHost = discover_iphone_usb_host();
+    const std::string usbNetworkHost = argc > 1 ? argv[1] :
+        (environmentHost && *environmentHost ? environmentHost :
+         (discoveredHost.empty() ? "172.20.10.1" : discoveredHost));
+    printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
+           usbNetworkHost.c_str(), DEVICE_PORT);
+    for (;;) {
+        const int fd = connect_to_device(usbNetworkHost.c_str());
+        if (fd >= 0) {
+            receive_session(fd);
+            closesocket(fd);
+            fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
+        } else {
+            fprintf(stderr, "INFO: retrying iPhone connection in 1 second\n");
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
 }

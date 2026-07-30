@@ -46,18 +46,21 @@ end-to-end 4K60 OBS camera path.
    - It ships with the Windows SDK samples. If missing, download the "DirectX 9.0 SDK" or grab `BaseClasses` from the Windows SDK. Note the folder that contains `streams.h`.
 5. Build **libusbmuxd** (`usbmuxd.lib`):
    - From https://github.com/libimobiledevice/libusbmuxd (cmake, x64-windows). Note its `include/` and `usbmuxd.lib`.
-6. Install **Apple Devices** app (or iTunes) from Microsoft Store so `usbmuxd` service + drivers exist on Windows.
+6. Install **Apple Devices** from Microsoft Store (already installed on this PC).
 7. Configure & build this project:
    ```
    cd windows
    cmake -B build -S . ^
      -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ^
      -DUSBMUXD_INCLUDE_DIR=C:\path\to\libusbmuxd\include ^
-     -DUSBMUXD_LIBRARY=C:\path\to\libusbmuxd\lib\usbmuxd.lib ^
-     -DBASECLASSES_DIR=C:\path\to\BaseClasses
+     -DUSBMUXD_LIBRARY=C:\path\to\libusbmuxd\lib\usbmuxd.lib
    cmake --build build --config Release
    ```
-8. Validate the USB transport before attempting OBS:
+8. On iPhone: **Settings → Personal Hotspot → Allow Others to Join → On**.
+   Keep the iPhone USB cable connected and tap **Trust** if requested. Apple
+   Devices provides the Windows USB-network driver. This is still USB (not
+   Wi-Fi), but it avoids the incomplete Windows `usbmuxd` implementation.
+9. Validate the USB transport before attempting OBS:
    ```
    cd windows\build\Release
    receiver.exe
@@ -89,7 +92,8 @@ end-to-end 4K60 OBS camera path.
 |---|---|
 | Xcode: "Failed to code sign" | Set a Team in Signing & Capabilities (Part A step 4). |
 | App won't launch on phone | Trust developer: Settings → General → VPN & Device Management. |
-| Windows: `usbmuxd_connect failed` | Phone app not running, or not plugged into Windows, or Apple Devices drivers missing. |
+| Receiver keeps retrying | Turn on iPhone Personal Hotspot, keep USB connected, and leave the camera app open. |
+| Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | OBS: no "iPhone Camera" device | `regsvr32 iphonecamera.ax` failed (run cmd as Admin) or missing VC++/runtime. |
 | Black frame in OBS | Transport not yet flowing; check the receiver console / phone is streaming. |
 

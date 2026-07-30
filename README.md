@@ -7,7 +7,7 @@ MSVC build pipeline, so `iphonecamera.ax` is not shipped as a working artifact.
 
 ## Repo layout
 ```
-ios/        Swift app (Xcode project included) — capture + HEVC encode + USB send
+ios/        Swift app — capture + HEVC encode + TCP over USB network
 windows/    C++ receiver; legacy DirectShow prototype is source-only
 shared/     StreamHeader.swift (mirrors the C protocol)
 protocol/   stream_protocol.h (single source of truth for the wire format)
@@ -20,7 +20,7 @@ Read **`docs/QUICKSTART.md`** — it lists every click and command for both Mac 
 
 ## Order of work (transport first, blur last)
 1. ✅ 4K60 capture + HEVC encode (iOS)
-2. ✅ USB send over usbmuxd (iOS)
+2. ✅ USB-network send through iPhone Personal Hotspot (iOS)
 3. ✅ Receive + decode (Windows)
 4. `receiver.exe` is the shipped USB/HEVC transport validator, not a virtual camera
 5. ⏳ Stability test: 30+ min continuous stream
