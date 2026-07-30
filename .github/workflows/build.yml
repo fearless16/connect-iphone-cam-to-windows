@@ -107,6 +107,11 @@ jobs:
 
       - name: Build experimental iphonecamera.ax
         run: |
+          # The archived BaseClasses use MSVC-only integer suffixes (for
+          # example 0I64). Normalize the fetched dependency for MinGW only.
+          while IFS= read -r header; do
+            perl -pi -e 's/\b([0-9]+)I64\b/${1}LL/g' "$header"
+          done < <(grep -rlE '[0-9]+I64' "$BASECLASSES_DIR")
           g++ -std=c++20 -O2 -shared -fpermissive -fms-extensions -DNOMINMAX -DUNICODE -D_UNICODE \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
