@@ -410,8 +410,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let nalOffset = index + startCodeLength
             guard nalOffset < bytes.count else { return false }
             let nalType = (bytes[nalOffset] >> 1) & 0x3f
-            // HEVC BLA, IDR and CRA pictures are valid decoder join points.
-            if (16...21).contains(nalType) { return true }
+            // USB clients join an already-running encoder. Only an IDR (not
+            // CRA/BLA) guarantees no missing reference picture is required.
+            if (19...20).contains(nalType) { return true }
             index = nalOffset + 1
         }
         return false

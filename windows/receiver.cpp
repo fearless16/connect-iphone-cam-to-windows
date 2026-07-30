@@ -194,9 +194,9 @@ static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
 }
 
 // An Annex-B HEVC connection can start at any packet boundary. VPS/SPS/PPS by
-// themselves are not enough: wait for BLA/IDR/CRA before accepting delta
-// pictures, otherwise FFmpeg correctly reports missing POC references.
-static bool contains_hevc_random_access(const uint8_t* data, size_t size) {
+// themselves are not enough. Require IDR (NAL 19/20), not CRA/BLA: only IDR
+// guarantees a decoder joining mid-stream needs no earlier reference picture.
+static bool contains_hevc_idr(const uint8_t* data, size_t size) {
     for (size_t i = 0; i + 4 < size; ++i) {
         size_t prefix = 0;
         if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) prefix = 3;
@@ -206,7 +206,7 @@ static bool contains_hevc_random_access(const uint8_t* data, size_t size) {
         const size_t nal = i + prefix;
         if (nal >= size) return false;
         const uint8_t nal_type = (data[nal] >> 1) & 0x3f;
-        if (nal_type >= 16 && nal_type <= 21) return true;
+        if (nal_type == 19 || nal_type == 20) return true;
         i = nal;
     }
     return false;
@@ -300,10 +300,10 @@ static void receive_session(int fd) {
         packet->dts = packet->pts;
 
         if (waitingForRandomAccess) {
-            if (!contains_hevc_random_access(packet->data, h.frame_size)) {
+            if (!contains_hevc_idr(packet->data, h.frame_size)) {
                 ++skippedUntilRandomAccess;
                 if (skippedUntilRandomAccess == 1 || skippedUntilRandomAccess % 60 == 0) {
-                    fprintf(stderr, "INFO: waiting for HEVC IDR/CRA; skipped %llu delta frames\n",
+                    fprintf(stderr, "INFO: waiting for HEVC IDR; skipped %llu delta frames\n",
                             static_cast<unsigned long long>(skippedUntilRandomAccess));
                 }
                 av_packet_unref(packet);
@@ -311,7 +311,7 @@ static void receive_session(int fd) {
             }
             if (dec) avcodec_flush_buffers(dec);
             waitingForRandomAccess = false;
-            printf("INFO: HEVC random-access frame received after %llu skipped frames\n",
+            printf("INFO: HEVC IDR frame received after %llu skipped frames\n",
                    static_cast<unsigned long long>(skippedUntilRandomAccess));
         }
 
@@ -388,6 +388,7 @@ int main(int argc, char** argv) {
     const std::string usbNetworkHost = argc > 1 ? argv[1] :
         (environmentHost && *environmentHost ? environmentHost :
          (discoveredHost.empty() ? "172.20.10.1" : discoveredHost));
+    printf("INFO: iPhone Camera USB receiver build=GPU_RING_DIAGNOSTICS_V2\n");
     printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
            usbNetworkHost.c_str(), DEVICE_PORT);
     for (;;) {
