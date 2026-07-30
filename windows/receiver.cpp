@@ -193,6 +193,25 @@ static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
     return ctx;
 }
 
+// An Annex-B HEVC connection can start at any packet boundary. VPS/SPS/PPS by
+// themselves are not enough: wait for BLA/IDR/CRA before accepting delta
+// pictures, otherwise FFmpeg correctly reports missing POC references.
+static bool contains_hevc_random_access(const uint8_t* data, size_t size) {
+    for (size_t i = 0; i + 4 < size; ++i) {
+        size_t prefix = 0;
+        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) prefix = 3;
+        else if (i + 5 < size && data[i] == 0 && data[i + 1] == 0 &&
+                 data[i + 2] == 0 && data[i + 3] == 1) prefix = 4;
+        if (!prefix) continue;
+        const size_t nal = i + prefix;
+        if (nal >= size) return false;
+        const uint8_t nal_type = (data[nal] >> 1) & 0x3f;
+        if (nal_type >= 16 && nal_type <= 21) return true;
+        i = nal;
+    }
+    return false;
+}
+
 static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &decoded,
                          DecodeTelemetry &telemetry, GpuFramePublisher &publisher,
                          uint64_t fallback_timestamp_us) {
@@ -250,6 +269,8 @@ static void receive_session(int fd) {
 
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     uint64_t frames = 0, decoded = 0;
+    uint64_t skippedUntilRandomAccess = 0;
+    bool waitingForRandomAccess = true;
     uint64_t firstTimestampUs = 0, previousTimestampUs = 0, sourceGapFrames = 0;
     auto t0 = std::chrono::steady_clock::now();
     printf("INFO: waiting for first HEVC frame from iPhone\n");
@@ -277,6 +298,22 @@ static void receive_session(int fd) {
         }
         packet->pts = static_cast<int64_t>(h.timestamp_us);
         packet->dts = packet->pts;
+
+        if (waitingForRandomAccess) {
+            if (!contains_hevc_random_access(packet->data, h.frame_size)) {
+                ++skippedUntilRandomAccess;
+                if (skippedUntilRandomAccess == 1 || skippedUntilRandomAccess % 60 == 0) {
+                    fprintf(stderr, "INFO: waiting for HEVC IDR/CRA; skipped %llu delta frames\n",
+                            static_cast<unsigned long long>(skippedUntilRandomAccess));
+                }
+                av_packet_unref(packet);
+                continue;
+            }
+            if (dec) avcodec_flush_buffers(dec);
+            waitingForRandomAccess = false;
+            printf("INFO: HEVC random-access frame received after %llu skipped frames\n",
+                   static_cast<unsigned long long>(skippedUntilRandomAccess));
+        }
 
         if (frames == 0) {
             printf("INFO: first HEVC packet=%u bytes frame=%u\n",

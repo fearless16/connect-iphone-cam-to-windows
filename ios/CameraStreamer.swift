@@ -376,12 +376,45 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             offset += nalLen
         }
 
+        // CMSample attachment metadata is normally correct, but after a
+        // capture/encoder interruption it can be absent. Do not let a delta
+        // frame open a new USB connection: the receiver has no reference
+        // pictures until an HEVC random-access picture arrives.
+        let containsRandomAccessPicture = containsHEVCRandomAccessPicture(annexB)
+        if isKeyframe && !containsRandomAccessPicture {
+            report("Encoder marked a non-random-access frame as keyframe")
+        }
+
         if saveEncodedStream { outputFile?.write(annexB) }
         sender.send(frameNumber: nextEncodedFrameNumber(),
                     timestampUs: presentationTimestampUs(sampleBuffer),
                     codec: StreamCodec.hevc.rawValue,
-                    isKeyframe: isKeyframe,
+                    isKeyframe: isKeyframe && containsRandomAccessPicture,
                     frame: annexB)
+    }
+
+    private func containsHEVCRandomAccessPicture(_ annexB: Data) -> Bool {
+        let bytes = [UInt8](annexB)
+        var index = 0
+        while index + 5 < bytes.count {
+            let startCodeLength: Int
+            if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
+                startCodeLength = 3
+            } else if bytes[index] == 0, bytes[index + 1] == 0,
+                      bytes[index + 2] == 0, bytes[index + 3] == 1 {
+                startCodeLength = 4
+            } else {
+                index += 1
+                continue
+            }
+            let nalOffset = index + startCodeLength
+            guard nalOffset < bytes.count else { return false }
+            let nalType = (bytes[nalOffset] >> 1) & 0x3f
+            // HEVC BLA, IDR and CRA pictures are valid decoder join points.
+            if (16...21).contains(nalType) { return true }
+            index = nalOffset + 1
+        }
+        return false
     }
 
     private func monotonicUs() -> UInt64 {
