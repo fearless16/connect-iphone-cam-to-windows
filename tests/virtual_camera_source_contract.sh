@@ -15,3 +15,5 @@ grep -q 'CLSID_VideoInputDeviceCategory' "$source_file"
 grep -q 'REFERENCE_TIME endTime' "$source_file"
 grep -q 'makeFilterRegistration' "$source_file"
 grep -q 'directshow_compat.h' "$source_file"
+grep -q 'directshow_compat_cleanup.h' "$source_file"
+grep -q 'IPHONE_CAMERA_UNDEF___OUT' windows/directshow_compat.h

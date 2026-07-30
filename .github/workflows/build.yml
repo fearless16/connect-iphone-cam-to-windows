@@ -106,7 +106,6 @@ jobs:
           ldd receiver.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
 
       - name: Build experimental iphonecamera.ax
-        continue-on-error: true
         run: |
           g++ -std=c++20 -O2 -shared -DNOMINMAX -DUNICODE -D_UNICODE \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \

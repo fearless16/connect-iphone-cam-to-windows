@@ -7,6 +7,7 @@
 #include <streams.h>
 #include <amvideo.h>
 #include <uuids.h>
+#include "directshow_compat_cleanup.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
