@@ -65,7 +65,7 @@ public:
 
 private:
     int connectDevice() {
-        usbmuxd_device_info* devices = nullptr;
+        usbmuxd_device_info_t* devices = nullptr;
         const int count = usbmuxd_get_device_list(&devices);
         if (count <= 0) return -1;
         const int fd = usbmuxd_connect(devices[0].device_id, kDevicePort);

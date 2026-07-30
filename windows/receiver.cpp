@@ -23,7 +23,7 @@ extern "C" {
 static constexpr bool kSaveReceivedStream = false;
 
 static int connect_to_device() {
-    usbmuxd_device_info *list = nullptr;
+    usbmuxd_device_info_t *list = nullptr;
     int count = usbmuxd_get_device_list(&list);
     if (count <= 0) {
         fprintf(stderr, "ERROR: no usbmuxd devices (is iTunes/AppleMobileDevice installed?)\n");
