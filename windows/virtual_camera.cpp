@@ -226,7 +226,7 @@ HRESULT CIPhoneCameraStream::FillBuffer(IMediaSample* sample) {
     if (FAILED(hr) || !destination) return FAILED(hr) ? hr : E_FAIL;
     if (!frames_.copyLatest(destination, kFrameBytes)) std::memset(destination, 0, kFrameBytes);
     sample->SetActualDataLength(static_cast<LONG>(kFrameBytes));
-    const REFERENCE_TIME endTime = sampleTime_ + kFrameDuration;
+    REFERENCE_TIME endTime = sampleTime_ + kFrameDuration;
     sample->SetTime(&sampleTime_, &endTime);
     sampleTime_ = endTime;
     sample->SetSyncPoint(TRUE);
@@ -240,7 +240,15 @@ CUnknown* WINAPI CreateIPhoneCamera(LPUNKNOWN outer, HRESULT* hr) {
 
 const REGPINTYPES kPinTypes[] = {{&MEDIATYPE_Video, &MEDIASUBTYPE_RGB32}};
 const REGFILTERPINS2 kPins[] = {{REG_PINFLAG_B_OUTPUT, 1, 1, kPinTypes, 0, nullptr, nullptr}};
-const REGFILTER2 kFilterRegistration = {2, MERIT_DO_NOT_USE, 1, kPins};
+REGFILTER2 makeFilterRegistration() {
+    REGFILTER2 registration{};
+    registration.dwVersion = 2;
+    registration.dwMerit = MERIT_DO_NOT_USE;
+    registration.cPins2 = 1;
+    registration.rgPins2 = kPins;
+    return registration;
+}
+const REGFILTER2 kFilterRegistration = makeFilterRegistration();
 } // namespace
 
 CFactoryTemplate g_Templates[] = {
