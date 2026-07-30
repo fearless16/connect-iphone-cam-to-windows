@@ -632,7 +632,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             case .serious: label = "PRESSURE serious • 4K60 at risk"
             case .critical: label = "PRESSURE critical • camera may stop"
             case .shutdown: label = "PRESSURE shutdown • camera interrupted"
-            @unknown default: label = "PRESSURE unknown"
+            default: label = "PRESSURE unknown"
             }
             self.setPressureTelemetry(label)
         }
