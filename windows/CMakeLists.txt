@@ -28,7 +28,7 @@ endif()
 set(PROTO_INC ${CMAKE_CURRENT_SOURCE_DIR}/../protocol)
 
 # ============ Receiver (debug / latency measurement) ============
-add_executable(receiver receiver.cpp)
+add_executable(receiver receiver.cpp gpu_frame_publisher.cpp)
 target_include_directories(receiver PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
     ${USBMUXD_INCLUDE_DIR}
@@ -37,6 +37,10 @@ target_include_directories(receiver PRIVATE
 target_link_libraries(receiver PRIVATE
     ${FFMPEG_LIBRARIES}
     ${USBMUXD_LIBRARY}
+    d3d11
+    dxgi
+    mfplat
+    advapi32
     iphlpapi
     ws2_32)
 

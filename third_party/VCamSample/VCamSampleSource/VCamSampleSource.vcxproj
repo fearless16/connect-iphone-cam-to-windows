@@ -237,6 +237,9 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="EnumNames.cpp" />
     <ClCompile Include="FrameGenerator.cpp" />
+    <ClCompile Include="..\..\..\windows\mf_virtual_camera\gpu_frame_consumer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="MediaSource.cpp" />
     <ClCompile Include="MediaStream.cpp" />
     <ClCompile Include="MFTools.cpp" />

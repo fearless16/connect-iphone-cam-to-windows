@@ -16,12 +16,15 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 
+#include "gpu_frame_publisher.h"
+
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
+#include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
@@ -191,7 +194,8 @@ static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
 }
 
 static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &decoded,
-                         DecodeTelemetry &telemetry) {
+                         DecodeTelemetry &telemetry, GpuFramePublisher &publisher,
+                         uint64_t fallback_timestamp_us) {
     for (;;) {
         const int status = avcodec_receive_frame(decoder, frame);
         if (status == 0) {
@@ -202,6 +206,13 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
                     telemetry.first_frame_reported = true;
                     printf("INFO: verified GPU decode: D3D11 NV12 surface %dx%d\n",
                            frame->width, frame->height);
+                }
+                const uint64_t timestamp_us = frame->best_effort_timestamp == AV_NOPTS_VALUE
+                    ? fallback_timestamp_us : static_cast<uint64_t>(frame->best_effort_timestamp);
+                const HRESULT publish_hr = publisher.Publish(frame, timestamp_us);
+                if (FAILED(publish_hr)) {
+                    fprintf(stderr, "ERROR: GPU frame publish failed: 0x%08lX\n",
+                            static_cast<unsigned long>(publish_hr));
                 }
             } else {
                 ++telemetry.software_frames;
@@ -224,6 +235,7 @@ static void receive_session(int fd) {
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     DecodeTelemetry decodeTelemetry{};
+    GpuFramePublisher gpuPublisher{};
     AVCodecContext *dec = init_decoder(decodeTelemetry);
     AVPacket *packet = av_packet_alloc();
     AVFrame *decodedFrame = av_frame_alloc();
@@ -263,6 +275,8 @@ static void receive_session(int fd) {
             av_packet_unref(packet);
             break;
         }
+        packet->pts = static_cast<int64_t>(h.timestamp_us);
+        packet->dts = packet->pts;
 
         if (frames == 0) {
             printf("INFO: first HEVC packet=%u bytes frame=%u\n",
@@ -285,14 +299,16 @@ static void receive_session(int fd) {
         if (dec) {
             int status = avcodec_send_packet(dec, packet);
             if (status == AVERROR(EAGAIN)) {
-                if (drain_decoder(dec, decodedFrame, decoded, decodeTelemetry) == 0) {
+                if (drain_decoder(dec, decodedFrame, decoded, decodeTelemetry, gpuPublisher,
+                                  h.timestamp_us) == 0) {
                     status = avcodec_send_packet(dec, packet);
                 }
             }
             if (status < 0) {
                 fprintf(stderr, "ERROR: avcodec_send_packet failed: %d\n", status);
             } else {
-                drain_decoder(dec, decodedFrame, decoded, decodeTelemetry);
+                drain_decoder(dec, decodedFrame, decoded, decodeTelemetry, gpuPublisher,
+                              h.timestamp_us);
             }
         }
         av_packet_unref(packet);

@@ -94,9 +94,10 @@ jobs:
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
+            "${{ github.workspace }}/windows/gpu_frame_publisher.cpp" \
             -o receiver.exe \
             $(pkg-config --libs libavcodec libavutil libswscale) \
-            $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32
+            $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ld3d11 -ldxgi -lmfplat -ladvapi32
           ls -lh receiver.exe
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/
@@ -106,3 +107,38 @@ jobs:
         with:
           name: windows-binaries
           path: windows-binaries/
+
+  # ---------------------------------------------------------------------------
+  windows-virtual-camera:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Restore the documented Media Foundation source dependencies
+        run: nuget restore third_party/VCamSample/VCamSample.sln
+
+      - name: Build the native Frame Server source DLL (x64/MSVC)
+        shell: pwsh
+        run: |
+          msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
+            /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+
+      - name: Build the virtual-camera registration controller (x64/MSVC)
+        shell: pwsh
+        run: |
+          cmake -S windows/mf_virtual_camera -B build/mf-vcam -A x64 -DBUILD_TESTING=ON
+          cmake --build build/mf-vcam --config Release --parallel
+          ctest --test-dir build/mf-vcam -C Release --output-on-failure
+
+      - name: Package OBS virtual-camera files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force windows-virtual-camera | Out-Null
+          Copy-Item third_party/VCamSample/x64/Release/VCamSampleSource.dll windows-virtual-camera/IPhoneCameraStreamSource.dll
+          Copy-Item build/mf-vcam/Release/IPhoneCameraVcamController.exe windows-virtual-camera/
+          Copy-Item windows/mf_virtual_camera/INSTALL-OBS.ps1 windows-virtual-camera/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-virtual-camera
+          path: windows-virtual-camera/
