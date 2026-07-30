@@ -8,7 +8,10 @@ grep -q 'stateUpdateHandler' "$sender"
 grep -q 'PC connected' "$sender"
 grep -q 'First video frame sent' "$sender"
 grep -q 'guard listener == nil' "$sender"
-grep -q 'conn.cancel()' "$sender"
+# A newly accepted connection must replace and close the previous one.  The
+# implementation deliberately calls through the stored connection so it never
+# accidentally cancels the new `conn` passed by Network.framework.
+grep -q 'connection?.cancel()' "$sender"
 grep -q 'maxQueuedPackets = 8' "$sender"
 grep -q 'pumpSend' "$sender"
 grep -q 'onFrameRate' "$sender"
