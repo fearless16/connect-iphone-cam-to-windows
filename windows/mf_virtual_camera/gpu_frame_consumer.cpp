@@ -1,6 +1,7 @@
 #include "gpu_frame_consumer.h"
 
 #include <dxgi.h>
+#include <dxgi1_2.h>
 
 namespace iphone_camera::gpu_transport {
 
@@ -21,6 +22,9 @@ void GpuFrameConsumer::Reset() noexcept {
     }
     device_handle_ = nullptr;
     device_manager_.Reset();
+    if (producer_process_) CloseHandle(producer_process_);
+    producer_process_ = nullptr;
+    producer_pid_ = 0;
     if (control_) UnmapViewOfFile(control_);
     control_ = nullptr;
     if (mapping_) CloseHandle(mapping_);
@@ -78,11 +82,24 @@ HRESULT GpuFrameConsumer::OpenSlot(const FrameSlot& slot) {
     input_texture_.Reset();
     input_handle_ = 0;
 
-    // D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX exposes a session-shared D3D
-    // resource handle. It is consumed directly by OpenSharedResource; treating
-    // it as a normal process handle and calling DuplicateHandle is incorrect.
-    HANDLE shared_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(slot.shared_texture_handle));
-    HRESULT hr = device_->OpenSharedResource(shared_handle, IID_PPV_ARGS(&input_texture_));
+    // A D3D11.1 NT shared handle is process-local. Duplicate it from the
+    // receiver process, then open it with the documented OpenSharedResource1.
+    if (producer_pid_ != control_->producer_pid || !producer_process_) {
+        if (producer_process_) CloseHandle(producer_process_);
+        producer_process_ = OpenProcess(PROCESS_DUP_HANDLE, FALSE, control_->producer_pid);
+        producer_pid_ = control_->producer_pid;
+        if (!producer_process_) return HRESULT_FROM_WIN32(GetLastError());
+    }
+    HANDLE remote_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(slot.shared_texture_handle));
+    HANDLE local_handle = nullptr;
+    if (!DuplicateHandle(producer_process_, remote_handle, GetCurrentProcess(),
+                         &local_handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+    Microsoft::WRL::ComPtr<ID3D11Device1> device1;
+    HRESULT hr = device_.As(&device1);
+    if (SUCCEEDED(hr)) hr = device1->OpenSharedResource1(local_handle, IID_PPV_ARGS(&input_texture_));
+    CloseHandle(local_handle);
     if (FAILED(hr)) return hr;
     hr = input_texture_.As(&input_mutex_);
     if (FAILED(hr)) return hr;

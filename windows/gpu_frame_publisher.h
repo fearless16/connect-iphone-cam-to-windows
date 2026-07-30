@@ -35,6 +35,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     std::array<Microsoft::WRL::ComPtr<ID3D11Texture2D>, iphone_camera::gpu_transport::kSlotCount> textures_;
     std::array<Microsoft::WRL::ComPtr<IDXGIKeyedMutex>, iphone_camera::gpu_transport::kSlotCount> mutexes_;
+    std::array<HANDLE, iphone_camera::gpu_transport::kSlotCount> shared_handles_{};
     uint64_t origin_source_us_ = 0;
     int64_t origin_time_100ns_ = 0;
     uint64_t sequence_ = 0;

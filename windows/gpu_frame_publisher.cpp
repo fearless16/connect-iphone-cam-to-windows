@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <sddl.h>
 
 extern "C" {
@@ -26,6 +27,10 @@ GpuFramePublisher::~GpuFramePublisher() { Reset(); }
 void GpuFramePublisher::Reset() noexcept {
     for (auto& mutex : mutexes_) mutex.Reset();
     for (auto& texture : textures_) texture.Reset();
+    for (auto& handle : shared_handles_) {
+        if (handle) CloseHandle(handle);
+        handle = nullptr;
+    }
     context_.Reset();
     device_.Reset();
     if (control_) UnmapViewOfFile(control_);
@@ -101,7 +106,10 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     ring_desc.Usage = D3D11_USAGE_DEFAULT;
     ring_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
     ring_desc.CPUAccessFlags = 0;
-    ring_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    // The documented D3D11.1 cross-process path. Legacy GetSharedHandle
+    // resources leave validation driver-defined and fail on some AMD paths.
+    ring_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+                         D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
     for (uint32_t i = 0; i < iphone_camera::gpu_transport::kSlotCount; ++i) {
         HRESULT create_hr = device_->CreateTexture2D(&ring_desc, nullptr, &textures_[i]);
         if (FAILED(create_hr)) {
@@ -115,18 +123,19 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
                     static_cast<unsigned long>(mutex_hr));
             return mutex_hr;
         }
-        Microsoft::WRL::ComPtr<IDXGIResource> resource;
-        HANDLE shared_handle = nullptr;
+        Microsoft::WRL::ComPtr<IDXGIResource1> resource;
         HRESULT resource_hr = textures_[i].As(&resource);
         if (FAILED(resource_hr)) return resource_hr;
-        HRESULT share_hr = resource->GetSharedHandle(&shared_handle);
+        HRESULT share_hr = resource->CreateSharedHandle(nullptr,
+                                                         DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                                         nullptr, &shared_handles_[i]);
         if (FAILED(share_hr)) {
-            fprintf(stderr, "ERROR: GPU ring GetSharedHandle failed: 0x%08lX\n",
+            fprintf(stderr, "ERROR: GPU ring CreateSharedHandle failed: 0x%08lX\n",
                     static_cast<unsigned long>(share_hr));
             return share_hr;
         }
         control_->slots[i].shared_texture_handle =
-            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shared_handle));
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shared_handles_[i]));
         control_->slots[i].producer_key = 0;
         control_->slots[i].consumer_key = 1;
         // Newly-created keyed mutexes start with key zero, owned by producer.

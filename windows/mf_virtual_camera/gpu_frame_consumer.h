@@ -35,6 +35,8 @@ private:
 
     HANDLE mapping_ = nullptr;
     ControlBlock* control_ = nullptr;
+    HANDLE producer_process_ = nullptr;
+    uint32_t producer_pid_ = 0;
     uint32_t generation_ = 0;
     uint64_t last_sequence_ = 0;
     AdapterIdentity adapter_{};
