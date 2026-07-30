@@ -188,6 +188,7 @@ static void receive_session(int fd) {
 
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     uint64_t frames = 0, decoded = 0;
+    uint64_t firstTimestampUs = 0, previousTimestampUs = 0, sourceGapFrames = 0;
     auto t0 = std::chrono::steady_clock::now();
     printf("INFO: waiting for first HEVC frame from iPhone\n");
 
@@ -208,7 +209,16 @@ static void receive_session(int fd) {
         if (frames == 0) {
             printf("INFO: first HEVC packet=%u bytes frame=%u\n",
                    h.frame_size, h.frame_number);
+            firstTimestampUs = h.timestamp_us;
+        } else if (h.timestamp_us > previousTimestampUs) {
+            const uint64_t deltaUs = h.timestamp_us - previousTimestampUs;
+            // A 60 fps source should advance by about 16.7 ms. Count only
+            // significant gaps so this remains useful if the encoder jitters.
+            if (deltaUs > 25'000) {
+                sourceGapFrames += (deltaUs + 8'333) / 16'666 - 1;
+            }
         }
+        previousTimestampUs = h.timestamp_us;
 
         if (out) fwrite(frame.data(), 1, h.frame_size, out);
         frames++;
@@ -226,10 +236,16 @@ static void receive_session(int fd) {
             av_packet_free(&pkt);
         }
 
-        if (frames % 600 == 0) {
+        if (frames % 120 == 0) {
             auto now = std::chrono::steady_clock::now();
             double s = std::chrono::duration<double>(now - t0).count();
-            printf("STAT: recv=%.1f fps decode=%llu frames\n", frames / s,
+            const double sourceSeconds = previousTimestampUs > firstTimestampUs
+                ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
+            const double sourceFps = sourceSeconds > 0
+                ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
+            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu frames\n",
+                   frames / s, sourceFps,
+                   static_cast<unsigned long long>(sourceGapFrames),
                    static_cast<unsigned long long>(decoded));
         }
     }

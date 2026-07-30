@@ -26,10 +26,21 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let saveEncodedStream = false
     private let sender = StreamSender()
     private var frameNumber: UInt32 = 0
+    private var encodedFrameNumber: UInt32 = 0
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
-    private var capturedFrameCount: UInt64 = 0
-    private var captureStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    private let telemetryLock = NSLock()
+    private var activeFormatTelemetry = "Waiting for 4K60 format"
+    private var sensorFirstPTS = CMTime.invalid
+    private var encoderFirstPTS = CMTime.invalid
+    private var sensorFrameCount: UInt64 = 0
+    private var encoderFrameCount: UInt64 = 0
+    private var sensorFPS = 0.0
+    private var encoderFPS = 0.0
+    private var usbFPS = 0.0
+    private var captureDropCount: UInt64 = 0
+    private var transportDropCount: UInt64 = 0
+    var onDiagnostics: ((String) -> Void)?
 
     override init() {
         super.init()
@@ -120,7 +131,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             guard let fmt = device.formats.first(where: { format in
                 let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
                 return d.width == 3840 && d.height == 2160 &&
-                    format.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= 60 })
+                    format.videoSupportedFrameRateRanges.contains(where: {
+                        $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
+                    })
             }) else {
                 print("ERROR: this camera does not support 3840x2160 at 60 fps")
                 report("This iPhone does not support 4K at 60 fps")
@@ -132,6 +145,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             let dur = CMTime(value: 1, timescale: 60)
             device.activeVideoMinFrameDuration = dur
             device.activeVideoMaxFrameDuration = dur
+            let active = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+            let activeMin = 1.0 / CMTimeGetSeconds(device.activeVideoMaxFrameDuration)
+            let activeMax = 1.0 / CMTimeGetSeconds(device.activeVideoMinFrameDuration)
+            resetTelemetry(format: String(format: "ACTIVE %dx%d • device %.1f-%.1f fps • request 60.0",
+                                           active.width, active.height, activeMin, activeMax))
             device.unlockForConfiguration()
         } catch {
             report("Camera configuration failed: \(error.localizedDescription)")
@@ -147,6 +165,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         output.videoSettings = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
+        // Keep live latency bounded, and account for every dropped source frame.
+        output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "capture"))
         guard session.canAddOutput(output) else {
             session.commitConfiguration()
@@ -169,12 +189,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self?.requestKeyFrame()
         }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
-            self?.report(String(format: "USB %.1f fps • dropped %llu", sentFps, droppedFrames))
+            self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
         }
         sender.start()   // Step 5: begin listening for the Windows receiver
         frameStartUptime = ProcessInfo.processInfo.systemUptime
-        captureStartUptime = frameStartUptime
-        capturedFrameCount = 0
+        publishDiagnostics()
         report("Camera active • waiting for PC")
     }
 
@@ -196,6 +215,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             outputCallback: { (refcon, _, status, _, sampleBuffer) in
                 guard let sb = sampleBuffer, status == noErr else { return }
                 let streamer = Unmanaged<CameraStreamer>.fromOpaque(refcon!).takeUnretainedValue()
+                streamer.recordEncodedFrame(CMSampleBufferGetPresentationTimeStamp(sb))
                 streamer.writeAnnexB(sampleBuffer: sb)
             },
             refcon: refcon,
@@ -246,16 +266,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             }
             return
         }
-        capturedFrameCount &+= 1
-        if capturedFrameCount % 120 == 0 {
-            let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - captureStartUptime)
-            report(String(format: "Camera %.1f fps • 4K active", Double(capturedFrameCount) / elapsed))
-        }
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        recordSensorFrame(pts)
         if activeEncoder() == nil && !encoderSetupFailed {
             createEncoder(width: width, height: height)
         }
         guard let enc = activeEncoder() else { return }
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let frameProperties: CFDictionary? = consumeForcedKeyFrame()
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame as String: true] as CFDictionary
             : nil
@@ -280,6 +296,16 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if frameNumber % 600 == 0 {
             print(String(format: "FPS: ~%.1f", Double(frameNumber) / elapsed))
         }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput,
+                       didDrop sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        telemetryLock.lock()
+        captureDropCount &+= 1
+        let shouldPublish = captureDropCount == 1 || captureDropCount % 30 == 0
+        telemetryLock.unlock()
+        if shouldPublish { publishDiagnostics() }
     }
 
     // MARK: - Annex-B conversion (length-prefixed -> start codes)
@@ -358,8 +384,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
 
         if saveEncodedStream { outputFile?.write(annexB) }
-        sender.send(frameNumber: frameNumber,
-                    timestampUs: monotonicUs(),
+        sender.send(frameNumber: nextEncodedFrameNumber(),
+                    timestampUs: presentationTimestampUs(sampleBuffer),
                     codec: StreamCodec.hevc.rawValue,
                     isKeyframe: isKeyframe,
                     frame: annexB)
@@ -369,6 +395,75 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         var info = mach_timebase_info()
         mach_timebase_info(&info)
         return UInt64(mach_absolute_time()) * UInt64(info.numer) / UInt64(info.denom) / 1000
+    }
+
+    private func presentationTimestampUs(_ sampleBuffer: CMSampleBuffer) -> UInt64 {
+        let seconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        guard seconds.isFinite, seconds >= 0 else { return monotonicUs() }
+        return UInt64(seconds * 1_000_000.0)
+    }
+
+    private func resetTelemetry(format: String) {
+        telemetryLock.lock()
+        activeFormatTelemetry = format
+        sensorFirstPTS = .invalid
+        encoderFirstPTS = .invalid
+        sensorFrameCount = 0
+        encoderFrameCount = 0
+        encodedFrameNumber = 0
+        sensorFPS = 0
+        encoderFPS = 0
+        usbFPS = 0
+        captureDropCount = 0
+        transportDropCount = 0
+        telemetryLock.unlock()
+    }
+
+    private func recordSensorFrame(_ pts: CMTime) {
+        telemetryLock.lock()
+        if !sensorFirstPTS.isValid { sensorFirstPTS = pts }
+        sensorFrameCount &+= 1
+        let elapsed = CMTimeGetSeconds(CMTimeSubtract(pts, sensorFirstPTS))
+        if elapsed > 0 { sensorFPS = Double(sensorFrameCount - 1) / elapsed }
+        let shouldPublish = sensorFrameCount % 30 == 0
+        telemetryLock.unlock()
+        if shouldPublish { publishDiagnostics() }
+    }
+
+    private func recordEncodedFrame(_ pts: CMTime) {
+        telemetryLock.lock()
+        if !encoderFirstPTS.isValid { encoderFirstPTS = pts }
+        encoderFrameCount &+= 1
+        let elapsed = CMTimeGetSeconds(CMTimeSubtract(pts, encoderFirstPTS))
+        if elapsed > 0 { encoderFPS = Double(encoderFrameCount - 1) / elapsed }
+        let shouldPublish = encoderFrameCount % 30 == 0
+        telemetryLock.unlock()
+        if shouldPublish { publishDiagnostics() }
+    }
+
+    private func recordTransport(fps: Double, droppedFrames: UInt64) {
+        telemetryLock.lock()
+        usbFPS = fps
+        transportDropCount = droppedFrames
+        telemetryLock.unlock()
+        publishDiagnostics()
+    }
+
+    private func nextEncodedFrameNumber() -> UInt32 {
+        telemetryLock.lock()
+        encodedFrameNumber &+= 1
+        let number = encodedFrameNumber
+        telemetryLock.unlock()
+        return number
+    }
+
+    private func publishDiagnostics() {
+        telemetryLock.lock()
+        let text = String(format: "%@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • transport %llu",
+                          activeFormatTelemetry, sensorFPS, encoderFPS, usbFPS,
+                          captureDropCount, transportDropCount)
+        telemetryLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.onDiagnostics?(text) }
     }
 
     private func openOutputFile() {
