@@ -15,6 +15,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
+#include <d3d11.h>
+#include <dxgi.h>
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -23,12 +25,43 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
 
 #define DEVICE_PORT 12345u
 static constexpr bool kSaveReceivedStream = false;
+
+struct DecodeTelemetry {
+    bool d3d11_requested = false;
+    bool first_frame_reported = false;
+    uint64_t d3d11_frames = 0;
+    uint64_t software_frames = 0;
+};
+
+static void log_d3d11_adapter(AVBufferRef *hw) {
+    if (!hw || !hw->data) return;
+    auto *deviceContext = reinterpret_cast<AVHWDeviceContext *>(hw->data);
+    if (!deviceContext || !deviceContext->hwctx) return;
+    auto *d3d = reinterpret_cast<AVD3D11VADeviceContext *>(deviceContext->hwctx);
+    if (!d3d || !d3d->device) return;
+
+    IDXGIDevice *dxgiDevice = nullptr;
+    if (FAILED(d3d->device->QueryInterface(IID_IDXGIDevice,
+                                            reinterpret_cast<void **>(&dxgiDevice)))) return;
+    IDXGIAdapter *adapter = nullptr;
+    if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
+        DXGI_ADAPTER_DESC description{};
+        if (SUCCEEDED(adapter->GetDesc(&description))) {
+            printf("INFO: D3D11VA adapter=%ls vendor=0x%04X device=0x%04X vram=%llu MiB\n",
+                   description.Description, description.VendorId, description.DeviceId,
+                   static_cast<unsigned long long>(description.DedicatedVideoMemory / (1024 * 1024)));
+        }
+        adapter->Release();
+    }
+    dxgiDevice->Release();
+}
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
     for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
@@ -156,7 +189,7 @@ static bool read_exact(int fd, uint8_t *buf, size_t n, const char *part) {
     return true;
 }
 
-static AVCodecContext *init_decoder() {
+static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
     if (!codec) { fprintf(stderr, "ERROR: HEVC decoder not found\n"); return nullptr; }
     AVCodecContext *ctx = avcodec_alloc_context3(codec);
@@ -165,6 +198,8 @@ static AVCodecContext *init_decoder() {
     // D3D11VA hardware acceleration.
     AVBufferRef *hw = nullptr;
     if (av_hwdevice_ctx_create(&hw, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) == 0) {
+        telemetry.d3d11_requested = true;
+        log_d3d11_adapter(hw);
         ctx->hw_device_ctx = av_buffer_ref(hw);
         ctx->get_format = select_d3d11_format;
         av_buffer_unref(&hw);
@@ -182,11 +217,27 @@ static AVCodecContext *init_decoder() {
     return ctx;
 }
 
-static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &decoded) {
+static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &decoded,
+                         DecodeTelemetry &telemetry) {
     for (;;) {
         const int status = avcodec_receive_frame(decoder, frame);
         if (status == 0) {
             ++decoded;
+            if (frame->format == AV_PIX_FMT_D3D11) {
+                ++telemetry.d3d11_frames;
+                if (!telemetry.first_frame_reported) {
+                    telemetry.first_frame_reported = true;
+                    printf("INFO: verified GPU decode: D3D11 NV12 surface %dx%d\n",
+                           frame->width, frame->height);
+                }
+            } else {
+                ++telemetry.software_frames;
+                if (!telemetry.first_frame_reported) {
+                    telemetry.first_frame_reported = true;
+                    fprintf(stderr, "ERROR: decoder returned %s, not a D3D11 surface\n",
+                            av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
+                }
+            }
             av_frame_unref(frame);
             continue;
         }
@@ -199,7 +250,8 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
 static void receive_session(int fd) {
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
-    AVCodecContext *dec = init_decoder();
+    DecodeTelemetry decodeTelemetry{};
+    AVCodecContext *dec = init_decoder(decodeTelemetry);
     AVPacket *packet = av_packet_alloc();
     AVFrame *decodedFrame = av_frame_alloc();
     if (!packet || !decodedFrame) {
@@ -260,14 +312,14 @@ static void receive_session(int fd) {
         if (dec) {
             int status = avcodec_send_packet(dec, packet);
             if (status == AVERROR(EAGAIN)) {
-                if (drain_decoder(dec, decodedFrame, decoded) == 0) {
+                if (drain_decoder(dec, decodedFrame, decoded, decodeTelemetry) == 0) {
                     status = avcodec_send_packet(dec, packet);
                 }
             }
             if (status < 0) {
                 fprintf(stderr, "ERROR: avcodec_send_packet failed: %d\n", status);
             } else {
-                drain_decoder(dec, decodedFrame, decoded);
+                drain_decoder(dec, decodedFrame, decoded, decodeTelemetry);
             }
         }
         av_packet_unref(packet);
@@ -279,10 +331,12 @@ static void receive_session(int fd) {
                 ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
             const double sourceFps = sourceSeconds > 0
                 ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
-            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu frames\n",
+            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu gpu=%llu cpu=%llu frames\n",
                    frames / s, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
-                   static_cast<unsigned long long>(decoded));
+                   static_cast<unsigned long long>(decoded),
+                   static_cast<unsigned long long>(decodeTelemetry.d3d11_frames),
+                   static_cast<unsigned long long>(decodeTelemetry.software_frames));
         }
     }
 

@@ -96,7 +96,7 @@ jobs:
             "${{ github.workspace }}/windows/receiver.cpp" \
             -o receiver.exe \
             $(pkg-config --libs libavcodec libavutil libswscale) \
-            $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32
+            $(pkg-config --libs libusbmuxd-2.0) -ld3d11 -ldxgi -liphlpapi -lws2_32
           ls -lh receiver.exe
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/

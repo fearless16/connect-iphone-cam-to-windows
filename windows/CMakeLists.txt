@@ -37,6 +37,8 @@ target_include_directories(receiver PRIVATE
 target_link_libraries(receiver PRIVATE
     ${FFMPEG_LIBRARIES}
     ${USBMUXD_LIBRARY}
+    d3d11
+    dxgi
     iphlpapi
     ws2_32)
 
