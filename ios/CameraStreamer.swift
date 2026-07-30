@@ -157,6 +157,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         invalidateEncoder(reason: nil)
         reportedNon4KFrame = false
         session.startRunning()
+        setIdleTimerDisabled(true)
         refreshActiveFormatTelemetry(device)
         sender.onStatus = { [weak self] message in
             self?.report(message)
@@ -170,7 +171,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.start()   // Step 5: begin listening for the Windows receiver
         frameStartUptime = ProcessInfo.processInfo.systemUptime
         publishDiagnostics()
-        report("Camera active • waiting for PC")
+        report("Camera active • screen kept awake • waiting for PC")
     }
 
     // MARK: - Step 4: VideoToolbox hardware HEVC encoder
@@ -496,6 +497,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             guard let self else { return }
             self.stopped = true
             self.session.stopRunning()
+            self.setIdleTimerDisabled(false)
             self.invalidateEncoder(reason: nil)
             self.sender.stop()
             try? self.outputFile?.close()
@@ -507,6 +509,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         print("STATUS: \(message)")
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
+        }
+    }
+
+    /// iOS prohibits camera capture in the background. Keep the device awake
+    /// for the live foreground stream; restore normal auto-lock when stopped.
+    private func setIdleTimerDisabled(_ disabled: Bool) {
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = disabled
         }
     }
 
