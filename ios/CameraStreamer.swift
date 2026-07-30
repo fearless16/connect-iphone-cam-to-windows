@@ -106,7 +106,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // MARK: - Step 2/3: enumerate + configure 3840x2160@60 HEVC
     private func configureSession() {
         session.beginConfiguration()
-        session.sessionPreset = .hd4K3840x2160
+        // An explicit device format owns resolution/framerate. A regular
+        // session preset is allowed to replace that format with its default.
+        session.sessionPreset = .inputPriority
 
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
                                                    for: .video,
@@ -124,35 +126,6 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 .map { $0.maxFrameRate }.max() ?? 0
             let subtype = CMFormatDescriptionGetMediaSubType(desc)
             print("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps) subtype=\(subtype)")
-        }
-
-        do {
-            try device.lockForConfiguration()
-            guard let fmt = device.formats.first(where: { format in
-                let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                return d.width == 3840 && d.height == 2160 &&
-                    format.videoSupportedFrameRateRanges.contains(where: {
-                        $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
-                    })
-            }) else {
-                print("ERROR: this camera does not support 3840x2160 at 60 fps")
-                report("This iPhone does not support 4K at 60 fps")
-                device.unlockForConfiguration()
-                session.commitConfiguration()
-                return
-            }
-            device.activeFormat = fmt
-            let dur = CMTime(value: 1, timescale: 60)
-            device.activeVideoMinFrameDuration = dur
-            device.activeVideoMaxFrameDuration = dur
-            let active = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-            let activeMin = 1.0 / CMTimeGetSeconds(device.activeVideoMaxFrameDuration)
-            let activeMax = 1.0 / CMTimeGetSeconds(device.activeVideoMinFrameDuration)
-            resetTelemetry(format: String(format: "ACTIVE %dx%d • device %.1f-%.1f fps • request 60.0",
-                                           active.width, active.height, activeMin, activeMax))
-            device.unlockForConfiguration()
-        } catch {
-            report("Camera configuration failed: \(error.localizedDescription)")
         }
 
         guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
@@ -174,6 +147,35 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.addOutput(output)
 
+        // Adding an AVCaptureDeviceInput resets its active format and its
+        // min/max frame durations. Configure the final, attached input within
+        // the same begin/commit transaction so 4K60 survives session startup.
+        do {
+            try device.lockForConfiguration()
+            guard let fmt = device.formats.first(where: { format in
+                let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                return d.width == 3840 && d.height == 2160 &&
+                    format.videoSupportedFrameRateRanges.contains(where: {
+                        $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
+                    })
+            }) else {
+                print("ERROR: this camera does not support 3840x2160 at 60 fps")
+                report("This iPhone does not support 4K at 60 fps")
+                device.unlockForConfiguration()
+                session.commitConfiguration()
+                return
+            }
+            device.activeFormat = fmt
+            let duration = CMTime(value: 1, timescale: 60)
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+            device.unlockForConfiguration()
+        } catch {
+            report("Camera configuration failed: \(error.localizedDescription)")
+            session.commitConfiguration()
+            return
+        }
+
         session.commitConfiguration()
 
         if saveEncodedStream { openOutputFile() }
@@ -182,6 +184,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         invalidateEncoder(reason: nil)
         reportedNon4KFrame = false
         session.startRunning()
+        refreshActiveFormatTelemetry(device)
         sender.onStatus = { [weak self] message in
             self?.report(message)
         }
@@ -401,6 +404,18 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let seconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         guard seconds.isFinite, seconds >= 0 else { return monotonicUs() }
         return UInt64(seconds * 1_000_000.0)
+    }
+
+    private func refreshActiveFormatTelemetry(_ device: AVCaptureDevice) {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let minimumFps = 1.0 / CMTimeGetSeconds(device.activeVideoMaxFrameDuration)
+        let maximumFps = 1.0 / CMTimeGetSeconds(device.activeVideoMinFrameDuration)
+        let verified = dimensions.width == 3840 && dimensions.height == 2160 &&
+            abs(minimumFps - 60.0) < 0.1 && abs(maximumFps - 60.0) < 0.1
+        let state = verified ? "VERIFIED 4K60" : "MISMATCH"
+        resetTelemetry(format: String(format: "%@ %dx%d • device %.1f-%.1f fps • request 60.0",
+                                       state, dimensions.width, dimensions.height,
+                                       minimumFps, maximumFps))
     }
 
     private func resetTelemetry(format: String) {
