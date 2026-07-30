@@ -25,7 +25,12 @@ The iPhone plugs into the **Windows PC** with a USB cable.
 
 ---
 
-## PART B — Windows: build the receiver + virtual camera
+## PART B — Windows: build and validate the transport
+
+`receiver.exe` is the supported validation tool at this stage. It connects over
+USB, validates the stream protocol, and decodes the HEVC feed. The
+`iphonecamera.ax` DirectShow filter is experimental and is **not** verified as an
+end-to-end 4K60 OBS camera path.
 
 1. Install **Visual Studio 2022** (Community is free) with the **"Desktop development with C++"** workload.
 2. Install **vcpkg** (one-time):
@@ -52,19 +57,29 @@ The iPhone plugs into the **Windows PC** with a USB cable.
      -DBASECLASSES_DIR=C:\path\to\BaseClasses
    cmake --build build --config Release
    ```
-8. Register the virtual camera (run **Command Prompt as Administrator**):
+8. Validate the USB transport before attempting OBS:
+   ```
+   cd windows\build\Release
+   receiver.exe
+   ```
+   Confirm it reports a stable receive/decode rate while the iPhone app is
+   running. Perform the planned 30-minute soak test before treating 4K60 as
+   reliable.
+9. Optional, experimental: register the virtual camera (run **Command Prompt as Administrator**):
    ```
    cd windows\build\Release
    regsvr32 iphonecamera.ax
    ```
-9. Open **OBS** → Sources → **+ Video Capture Device** → Device: **iPhone Camera**.
+10. Optional, experimental: open **OBS** → Sources → **+ Video Capture Device**
+   → Device: **iPhone Camera**. This path has not been validated for 4K60.
 
 ---
 
 ## PART C — Run
 
 - Phone must be plugged into the Windows PC via USB and the app running (`STATUS: Camera Active` on the Mac console earlier; the app keeps running after unplug once launched).
-- OBS now shows the iPhone's 4K60 feed as a normal camera.
+- Use `receiver.exe` to validate the USB transport. Do not treat the OBS camera
+  output as a verified 4K60 result yet; `iphonecamera.ax` remains experimental.
 
 ---
 
@@ -82,5 +97,6 @@ The iPhone plugs into the **Windows PC** with a USB cable.
 
 ## What is deliberately NOT built yet (per plan)
 
-Audio, settings, installer, segmentation/blur. We stabilize **4K60 over USB → OBS**
-first. Background blur comes last, only after a clean 30-minute stream.
+Audio, settings, installer, segmentation/blur, and a production DirectShow camera
+path. We stabilize **4K60 over USB with `receiver.exe`** first. Background blur
+comes last, only after a clean 30-minute stream.

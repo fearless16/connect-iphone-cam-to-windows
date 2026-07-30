@@ -1,7 +1,9 @@
 # iPhone Camera Stream → Windows OBS
 
-Stream the iPhone rear camera at **4K60** over **USB** and expose it to OBS on Windows
-as a **DirectShow** device named `iPhone Camera`. No UI, no settings, no blur (yet).
+This project is developing an iPhone rear-camera **4K60-over-USB** transport for
+Windows. The iOS encoder and `receiver.exe` transport path are the current
+validation target. `iphonecamera.ax` / OBS DirectShow support is experimental;
+it is **not** a verified end-to-end 4K60 camera path yet.
 
 ## Repo layout
 ```
@@ -20,7 +22,7 @@ Read **`docs/QUICKSTART.md`** — it lists every click and command for both Mac 
 1. ✅ 4K60 capture + HEVC encode (iOS)
 2. ✅ USB send over usbmuxd (iOS)
 3. ✅ Receive + decode (Windows)
-4. ✅ DirectShow virtual camera (OBS sees "iPhone Camera")
+4. ⚠️ Experimental DirectShow virtual camera (not validated for 4K60)
 5. ⏳ Stability test: 30+ min continuous stream
 6. ⏳ Vision person segmentation
 7. ⏳ Metal background blur / replace
