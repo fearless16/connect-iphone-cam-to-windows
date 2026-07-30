@@ -68,6 +68,8 @@ jobs:
 
       - name: Build receiver.exe and portable contract tests
         run: |
+          sh "${{ github.workspace }}/tests/virtual_camera_source_contract.sh" \
+            "${{ github.workspace }}/windows/virtual_camera.cpp"
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/tests/protocol_selftest.cpp" \

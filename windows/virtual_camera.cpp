@@ -150,8 +150,10 @@ public:
     HRESULT GetMediaType(CMediaType* mediaType) override;
     HRESULT DecideBufferSize(IMemAllocator* allocator, ALLOCATOR_PROPERTIES* requested) override;
     HRESULT FillBuffer(IMediaSample* sample) override;
-    HRESULT Active() override;
-    HRESULT Inactive() override;
+    // CSourceStream owns the graph worker thread. These are the supported
+    // virtual lifecycle hooks (Active/Inactive are not virtual in BaseClasses).
+    HRESULT OnThreadCreate() override;
+    HRESULT OnThreadDestroy() override;
 
 private:
     CIPhoneCameraSource* parent_;
@@ -207,15 +209,14 @@ HRESULT CIPhoneCameraStream::DecideBufferSize(IMemAllocator* allocator, ALLOCATO
     return actual.cbBuffer < static_cast<LONG>(kFrameBytes) ? E_FAIL : S_OK;
 }
 
-HRESULT CIPhoneCameraStream::Active() {
-    const HRESULT hr = CSourceStream::Active();
-    if (SUCCEEDED(hr)) parent_->startReceiver();
-    return hr;
+HRESULT CIPhoneCameraStream::OnThreadCreate() {
+    parent_->startReceiver();
+    return S_OK;
 }
 
-HRESULT CIPhoneCameraStream::Inactive() {
+HRESULT CIPhoneCameraStream::OnThreadDestroy() {
     parent_->stopReceiver();
-    return CSourceStream::Inactive();
+    return S_OK;
 }
 
 HRESULT CIPhoneCameraStream::FillBuffer(IMediaSample* sample) {
@@ -248,24 +249,31 @@ CFactoryTemplate g_Templates[] = {
 int g_cTemplates = sizeof(g_Templates) / sizeof(g_Templates[0]);
 
 STDAPI DllRegisterServer() {
+    HRESULT hr = AMovieDllRegisterServer2(TRUE);
+    if (FAILED(hr)) return hr;
+
     IFilterMapper2* mapper = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_FilterMapper2, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&mapper));
+    hr = CoCreateInstance(CLSID_FilterMapper2, nullptr, CLSCTX_INPROC_SERVER,
+                          IID_PPV_ARGS(&mapper));
     if (SUCCEEDED(hr)) {
         hr = mapper->RegisterFilter(CLSID_IPhoneCamera, L"iPhone Camera", nullptr,
                                     &CLSID_VideoInputDeviceCategory, nullptr, &kFilterRegistration);
         mapper->Release();
     }
+    // Do not leave a creatable COM class behind when its capture category
+    // registration fails; regsvr32 can be retried cleanly.
+    if (FAILED(hr)) AMovieDllRegisterServer2(FALSE);
     return hr;
 }
 
 STDAPI DllUnregisterServer() {
     IFilterMapper2* mapper = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_FilterMapper2, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&mapper));
-    if (SUCCEEDED(hr)) {
-        hr = mapper->UnregisterFilter(&CLSID_VideoInputDeviceCategory, nullptr, CLSID_IPhoneCamera);
+    HRESULT categoryHr = CoCreateInstance(CLSID_FilterMapper2, nullptr, CLSCTX_INPROC_SERVER,
+                                          IID_PPV_ARGS(&mapper));
+    if (SUCCEEDED(categoryHr)) {
+        categoryHr = mapper->UnregisterFilter(&CLSID_VideoInputDeviceCategory, nullptr, CLSID_IPhoneCamera);
         mapper->Release();
     }
-    return hr;
+    const HRESULT classHr = AMovieDllRegisterServer2(FALSE);
+    return FAILED(categoryHr) ? categoryHr : classHr;
 }
