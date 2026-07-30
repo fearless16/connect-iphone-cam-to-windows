@@ -13,6 +13,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var captureSession: AVCaptureSession { session }
     var onStatus: ((String) -> Void)?
     private var encoder: VTCompressionSession?
+    private var encoderSetupFailed = false
+    private var reportedNon4KFrame = false
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
     // Leave it off for live streaming; enable only while diagnosing encoding.
@@ -117,7 +119,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         session.commitConfiguration()
 
         if saveEncodedStream { openOutputFile() }
-        createEncoder(width: 3840, height: 2160)
+        encoder = nil
+        encoderSetupFailed = false
+        reportedNon4KFrame = false
         session.startRunning()
         sender.onStatus = { [weak self] message in
             self?.report(message)
@@ -129,6 +133,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Step 4: VideoToolbox hardware HEVC encoder
     private func createEncoder(width: Int, height: Int) {
+        let imageBufferAttributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        ]
         var sessionOut: VTCompressionSession?
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let status = VTCompressionSessionCreate(
@@ -137,7 +144,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             height: Int32(height),
             codecType: kCMVideoCodecType_HEVC,
             encoderSpecification: nil,
-            imageBufferAttributes: nil,
+            imageBufferAttributes: imageBufferAttributes as CFDictionary,
             compressedDataAllocator: nil,
             outputCallback: { (refcon, _, status, _, sampleBuffer) in
                 guard let sb = sampleBuffer, status == noErr else { return }
@@ -151,20 +158,48 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             report("HEVC encoder failed: \(status)")
             return
         }
+        let propertyStatuses: [(String, OSStatus)] = [
+            ("real-time", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)),
+            ("frame reordering", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)),
+            ("HEVC profile", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)),
+            ("bitrate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 80_000_000))),
+            ("frame rate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 60))),
+            ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 60))),
+        ]
+        if let failed = propertyStatuses.first(where: { $0.1 != noErr }) {
+            VTCompressionSessionInvalidate(enc)
+            encoderSetupFailed = true
+            report("HEVC encoder setting failed (\(failed.0)): \(failed.1)")
+            return
+        }
+
+        let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(enc)
+        guard prepareStatus == noErr else {
+            VTCompressionSessionInvalidate(enc)
+            encoderSetupFailed = true
+            report("HEVC encoder prepare failed: \(prepareStatus)")
+            return
+        }
         encoder = enc
-        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
-        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 80_000_000))
-        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 60))
-        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 60))
-        VTCompressionSessionPrepareToEncodeFrames(enc)
     }
 
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard let enc = encoder, let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let width = CVPixelBufferGetWidth(px)
+        let height = CVPixelBufferGetHeight(px)
+        guard width == 3840, height == 2160 else {
+            if !reportedNon4KFrame {
+                reportedNon4KFrame = true
+                report("Camera delivered \(width)x\(height), not 4K")
+            }
+            return
+        }
+        if encoder == nil && !encoderSetupFailed {
+            createEncoder(width: width, height: height)
+        }
+        guard let enc = encoder else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         var flags: VTEncodeInfoFlags = []
         let status = VTCompressionSessionEncodeFrame(enc,
