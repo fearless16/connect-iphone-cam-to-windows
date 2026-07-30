@@ -1,5 +1,11 @@
 #pragma once
 
+#include <algorithm>
+
+// The archived BaseClasses rely on the old Windows global min macro. The
+// filter defines NOMINMAX, so provide the standard overload explicitly.
+using std::min;
+
 // The legacy DirectShow BaseClasses still use pre-SAL annotation spellings.
 // MSVC provides them, while MinGW's Windows headers intentionally omit them.
 // They are annotations only, so defining the missing spellings as empty keeps
