@@ -158,7 +158,11 @@ HRESULT GpuFramePublisher::Publish(const AVFrame* frame, uint64_t source_timesta
                                     decoder_texture, static_cast<UINT>(reinterpret_cast<uintptr_t>(frame->data[1])),
                                     &visible_box);
     hr = mutexes_[slot_index]->ReleaseSync(published.consumer_key);
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr)) {
+        fprintf(stderr, "ERROR: GPU ring ReleaseSync failed: 0x%08lX\n",
+                static_cast<unsigned long>(hr));
+        return hr;
+    }
 
     const uint64_t next_sequence = ++sequence_;
     FrameSlot& slot = control_->slots[slot_index];
