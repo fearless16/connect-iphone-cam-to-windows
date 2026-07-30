@@ -89,8 +89,12 @@ jobs:
             $(pkg-config --libs libavcodec libavutil libswscale) \
             $(pkg-config --libs libusbmuxd-2.0) -lws2_32
           ls -lh receiver.exe
+          mkdir -p windows-binaries
+          cp receiver.exe windows-binaries/
+          ldd receiver.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
 
-      - name: Build iphonecamera.ax
+      - name: Build experimental iphonecamera.ax
+        continue-on-error: true
         run: |
           g++ -std=c++20 -O2 -shared -DNOMINMAX \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
@@ -101,11 +105,9 @@ jobs:
             $(pkg-config --libs libavcodec libavutil libswscale) \
             $(pkg-config --libs libusbmuxd-2.0) -lws2_32 -ld3d11 -lstrmiids -lstrmbase
           ls -lh iphonecamera.ax
+          cp iphonecamera.ax windows-binaries/
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-binaries
-          if-no-files-found: ignore
-          path: |
-            receiver.exe
-            iphonecamera.ax
+          path: windows-binaries/
