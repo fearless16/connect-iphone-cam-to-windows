@@ -29,7 +29,8 @@ jobs:
 
       - name: Package unsigned IPA (TrollStore-ready)
         run: |
-          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.app' -maxdepth 6 | head -1)
+          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -type d -name '*.app' | head -n 1)
+          test -n "$APP"
           echo "APP=$APP"
           mkdir -p Payload
           cp -r "$APP" Payload/
