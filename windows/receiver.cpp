@@ -15,8 +15,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
-#include <d3d11.h>
-#include <dxgi.h>
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -25,7 +23,6 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
-#include <libavutil/hwcontext_d3d11va.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
@@ -39,29 +36,6 @@ struct DecodeTelemetry {
     uint64_t d3d11_frames = 0;
     uint64_t software_frames = 0;
 };
-
-static void log_d3d11_adapter(AVBufferRef *hw) {
-    if (!hw || !hw->data) return;
-    auto *deviceContext = reinterpret_cast<AVHWDeviceContext *>(hw->data);
-    if (!deviceContext || !deviceContext->hwctx) return;
-    auto *d3d = reinterpret_cast<AVD3D11VADeviceContext *>(deviceContext->hwctx);
-    if (!d3d || !d3d->device) return;
-
-    IDXGIDevice *dxgiDevice = nullptr;
-    if (FAILED(d3d->device->QueryInterface(IID_IDXGIDevice,
-                                            reinterpret_cast<void **>(&dxgiDevice)))) return;
-    IDXGIAdapter *adapter = nullptr;
-    if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
-        DXGI_ADAPTER_DESC description{};
-        if (SUCCEEDED(adapter->GetDesc(&description))) {
-            printf("INFO: D3D11VA adapter=%ls vendor=0x%04X device=0x%04X vram=%llu MiB\n",
-                   description.Description, description.VendorId, description.DeviceId,
-                   static_cast<unsigned long long>(description.DedicatedVideoMemory / (1024 * 1024)));
-        }
-        adapter->Release();
-    }
-    dxgiDevice->Release();
-}
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
     for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
@@ -199,7 +173,6 @@ static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
     AVBufferRef *hw = nullptr;
     if (av_hwdevice_ctx_create(&hw, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0) == 0) {
         telemetry.d3d11_requested = true;
-        log_d3d11_adapter(hw);
         ctx->hw_device_ctx = av_buffer_ref(hw);
         ctx->get_format = select_d3d11_format;
         av_buffer_unref(&hw);
