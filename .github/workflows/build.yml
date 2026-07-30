@@ -120,7 +120,11 @@ jobs:
       - name: Build the native Frame Server source DLL (x64/MSVC)
         shell: pwsh
         run: |
-          $buildOutput = & msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+            -find 'MSBuild\**\Bin\amd64\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild x64 was not found on the hosted Windows runner.' }
+          $buildOutput = & $msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
             /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 2>&1
           $buildExitCode = $LASTEXITCODE
           $buildOutput | ForEach-Object { Write-Host $_ }
