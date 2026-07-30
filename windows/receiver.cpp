@@ -177,6 +177,7 @@ static AVCodecContext *init_decoder() {
         avcodec_free_context(&ctx);
         return nullptr;
     }
+    printf("INFO: HEVC decoder ready\n");
     return ctx;
 }
 
@@ -188,6 +189,7 @@ static void receive_session(int fd) {
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     uint64_t frames = 0, decoded = 0;
     auto t0 = std::chrono::steady_clock::now();
+    printf("INFO: waiting for first HEVC frame from iPhone\n");
 
     while (true) {
         if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE, "stream header")) break;
@@ -202,6 +204,11 @@ static void receive_session(int fd) {
         }
         std::vector<uint8_t> frame(h.frame_size);
         if (!read_exact(fd, frame.data(), h.frame_size, "video frame")) break;
+
+        if (frames == 0) {
+            printf("INFO: first HEVC packet=%u bytes frame=%u\n",
+                   h.frame_size, h.frame_number);
+        }
 
         if (out) fwrite(frame.data(), 1, h.frame_size, out);
         frames++;
