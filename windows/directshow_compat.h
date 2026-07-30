@@ -6,6 +6,12 @@
 // filter defines NOMINMAX, so provide the standard overload explicitly.
 using std::min;
 
+// DirectShow's archived sources use the MSVC-only 0I64 spelling. MinGW parses
+// it as a user-defined literal, so provide the equivalent standard C++ hook.
+constexpr long long operator "" I64(unsigned long long value) {
+    return static_cast<long long>(value);
+}
+
 // The legacy DirectShow BaseClasses still use pre-SAL annotation spellings.
 // MSVC provides them, while MinGW's Windows headers intentionally omit them.
 // They are annotations only, so defining the missing spellings as empty keeps
