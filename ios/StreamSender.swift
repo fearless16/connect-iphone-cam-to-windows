@@ -116,12 +116,13 @@ final class StreamSender {
             guard let self, let conn = self.connection,
                   self.connectionReady else { return }
             guard !self.waitingForKeyFrame || isKeyframe else { return }
-            if isKeyframe { self.waitingForKeyFrame = false }
             guard self.pendingPackets.count < self.maxQueuedPackets else {
                 self.droppedFrameCount &+= 1
                 return
             }
             self.pendingPackets.append(packet)
+            // Do not admit delta frames until this IDR was actually retained.
+            if isKeyframe { self.waitingForKeyFrame = false }
             self.pumpSend(connection: conn)
         }
     }

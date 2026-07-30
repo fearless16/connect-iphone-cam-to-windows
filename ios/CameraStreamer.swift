@@ -322,22 +322,22 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer,
                                                                     createIfNecessary: false) as? [[CFString: Any]]
         let isKeyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
+        var parameterSetCount = 0
+        var nalUnitHeaderLength: Int32 = 0
+        var parameterSetPointer: UnsafePointer<UInt8>?
+        var parameterSetSize = 0
+        let parameterStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            desc,
+            parameterSetIndex: 0,
+            parameterSetPointerOut: &parameterSetPointer,
+            parameterSetSizeOut: &parameterSetSize,
+            parameterSetCountOut: &parameterSetCount,
+            nalUnitHeaderLengthOut: &nalUnitHeaderLength)
+        guard parameterStatus == noErr, (1...4).contains(Int(nalUnitHeaderLength)) else {
+            report("HEVC parameter-set read failed: \(parameterStatus)")
+            return
+        }
         if isKeyframe {
-            var parameterSetCount = 0
-            var nalUnitHeaderLength: Int32 = 0
-            var parameterSetPointer: UnsafePointer<UInt8>?
-            var parameterSetSize = 0
-            let status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                desc,
-                parameterSetIndex: 0,
-                parameterSetPointerOut: &parameterSetPointer,
-                parameterSetSizeOut: &parameterSetSize,
-                parameterSetCountOut: &parameterSetCount,
-                nalUnitHeaderLengthOut: &nalUnitHeaderLength)
-            guard status == noErr else {
-                report("HEVC parameter-set read failed: \(status)")
-                return
-            }
             for index in 0..<parameterSetCount {
                 if index > 0 {
                     let nextStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
@@ -374,12 +374,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         let bytes = UnsafeRawPointer(base).assumingMemoryBound(to: UInt8.self)
 
-        // NAL units are 4-byte length prefixed.
+        let lengthFieldBytes = Int(nalUnitHeaderLength)
         var offset = 0
-        while offset + 4 <= total {
-            let nalLen = Int(bytes[offset]) << 24 | Int(bytes[offset+1]) << 16
-                       | Int(bytes[offset+2]) << 8 | Int(bytes[offset+3])
-            offset += 4
+        while offset + lengthFieldBytes <= total {
+            var nalLen = 0
+            for byteIndex in 0..<lengthFieldBytes {
+                nalLen = (nalLen << 8) | Int(bytes[offset + byteIndex])
+            }
+            offset += lengthFieldBytes
             guard nalLen > 0, offset + nalLen <= total else { break }
             annexB.append(contentsOf: startCode)
             annexB.append(Data(bytes: bytes.advanced(by: offset), count: nalLen))

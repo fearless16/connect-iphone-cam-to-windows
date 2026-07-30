@@ -21,6 +21,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
@@ -181,10 +182,34 @@ static AVCodecContext *init_decoder() {
     return ctx;
 }
 
+static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &decoded) {
+    for (;;) {
+        const int status = avcodec_receive_frame(decoder, frame);
+        if (status == 0) {
+            ++decoded;
+            av_frame_unref(frame);
+            continue;
+        }
+        if (status == AVERROR(EAGAIN) || status == AVERROR_EOF) return 0;
+        fprintf(stderr, "ERROR: avcodec_receive_frame failed: %d\n", status);
+        return status;
+    }
+}
+
 static void receive_session(int fd) {
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     AVCodecContext *dec = init_decoder();
+    AVPacket *packet = av_packet_alloc();
+    AVFrame *decodedFrame = av_frame_alloc();
+    if (!packet || !decodedFrame) {
+        fprintf(stderr, "ERROR: FFmpeg packet/frame allocation failed\n");
+        av_packet_free(&packet);
+        av_frame_free(&decodedFrame);
+        if (out) fclose(out);
+        if (dec) avcodec_free_context(&dec);
+        return;
+    }
 
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     uint64_t frames = 0, decoded = 0;
@@ -203,8 +228,16 @@ static void receive_session(int fd) {
             fprintf(stderr, "ERROR: unsupported stream codec %u\n", static_cast<unsigned>(h.codec));
             break;
         }
-        std::vector<uint8_t> frame(h.frame_size);
-        if (!read_exact(fd, frame.data(), h.frame_size, "video frame")) break;
+        // av_new_packet supplies AV_INPUT_BUFFER_PADDING_SIZE zero bytes, which
+        // optimized FFmpeg bitstream readers are allowed to read past payload.
+        if (av_new_packet(packet, static_cast<int>(h.frame_size)) < 0) {
+            fprintf(stderr, "ERROR: av_new_packet failed for %u bytes\n", h.frame_size);
+            break;
+        }
+        if (!read_exact(fd, packet->data, h.frame_size, "video frame")) {
+            av_packet_unref(packet);
+            break;
+        }
 
         if (frames == 0) {
             printf("INFO: first HEVC packet=%u bytes frame=%u\n",
@@ -220,21 +253,24 @@ static void receive_session(int fd) {
         }
         previousTimestampUs = h.timestamp_us;
 
-        if (out) fwrite(frame.data(), 1, h.frame_size, out);
+        if (out) fwrite(packet->data, 1, h.frame_size, out);
         frames++;
 
         // Step 7: decode with FFmpeg and count.
         if (dec) {
-            AVPacket *pkt = av_packet_alloc();
-            pkt->data = frame.data();
-            pkt->size = static_cast<int>(h.frame_size);
-            if (avcodec_send_packet(dec, pkt) == 0) {
-                AVFrame *f = av_frame_alloc();
-                while (avcodec_receive_frame(dec, f) == 0) decoded++;
-                av_frame_free(&f);
+            int status = avcodec_send_packet(dec, packet);
+            if (status == AVERROR(EAGAIN)) {
+                if (drain_decoder(dec, decodedFrame, decoded) == 0) {
+                    status = avcodec_send_packet(dec, packet);
+                }
             }
-            av_packet_free(&pkt);
+            if (status < 0) {
+                fprintf(stderr, "ERROR: avcodec_send_packet failed: %d\n", status);
+            } else {
+                drain_decoder(dec, decodedFrame, decoded);
+            }
         }
+        av_packet_unref(packet);
 
         if (frames % 120 == 0) {
             auto now = std::chrono::steady_clock::now();
@@ -251,6 +287,8 @@ static void receive_session(int fd) {
     }
 
     if (out) fclose(out);
+    av_packet_free(&packet);
+    av_frame_free(&decodedFrame);
     if (dec) avcodec_free_context(&dec);
     printf("INFO: done, received %llu frames\n",
            static_cast<unsigned long long>(frames));
