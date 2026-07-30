@@ -1,7 +1,6 @@
 #include "gpu_frame_publisher.h"
 
 #include <dxgi.h>
-#include <mfapi.h>
 #include <sddl.h>
 
 extern "C" {
@@ -11,6 +10,15 @@ extern "C" {
 
 using iphone_camera::gpu_transport::ControlBlock;
 using iphone_camera::gpu_transport::FrameSlot;
+
+static int64_t current_time_100ns() noexcept {
+    FILETIME file_time{};
+    GetSystemTimeAsFileTime(&file_time);
+    ULARGE_INTEGER value{};
+    value.LowPart = file_time.dwLowDateTime;
+    value.HighPart = file_time.dwHighDateTime;
+    return static_cast<int64_t>(value.QuadPart);
+}
 
 GpuFramePublisher::~GpuFramePublisher() { Reset(); }
 
@@ -29,13 +37,13 @@ void GpuFramePublisher::Reset() noexcept {
 HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_timestamp_us) {
     if (!frame || frame->format != AV_PIX_FMT_D3D11 || !frame->data[0]) return E_INVALIDARG;
     auto* decoder_texture = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
-    HRESULT hr = decoder_texture->GetDevice(&device_);
-    if (FAILED(hr)) return hr;
+    decoder_texture->GetDevice(device_.GetAddressOf());
+    if (!device_) return E_FAIL;
     device_->GetImmediateContext(&context_);
     D3D11_TEXTURE2D_DESC source_desc{};
     decoder_texture->GetDesc(&source_desc);
     if (source_desc.Width != 3840 || source_desc.Height != 2160 || source_desc.Format != DXGI_FORMAT_NV12)
-        return MF_E_INVALIDMEDIATYPE;
+        return E_INVALIDARG;
 
     PSECURITY_DESCRIPTOR security_descriptor = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -91,7 +99,7 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
         // Newly-created keyed mutexes start with key zero, owned by producer.
     }
     origin_source_us_ = source_timestamp_us;
-    origin_time_100ns_ = MFGetSystemTime();
+    origin_time_100ns_ = current_time_100ns();
     return S_OK;
 }
 
