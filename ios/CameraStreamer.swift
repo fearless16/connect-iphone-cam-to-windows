@@ -28,6 +28,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var frameNumber: UInt32 = 0
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    private var capturedFrameCount: UInt64 = 0
+    private var captureStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
 
     override init() {
         super.init()
@@ -166,8 +168,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.onClientConnected = { [weak self] in
             self?.requestKeyFrame()
         }
+        sender.onFrameRate = { [weak self] sentFps, droppedFrames in
+            self?.report(String(format: "USB %.1f fps • dropped %llu", sentFps, droppedFrames))
+        }
         sender.start()   // Step 5: begin listening for the Windows receiver
         frameStartUptime = ProcessInfo.processInfo.systemUptime
+        captureStartUptime = frameStartUptime
+        capturedFrameCount = 0
         report("Camera active • waiting for PC")
     }
 
@@ -238,6 +245,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 report("Camera delivered \(width)x\(height), not 4K")
             }
             return
+        }
+        capturedFrameCount &+= 1
+        if capturedFrameCount % 120 == 0 {
+            let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - captureStartUptime)
+            report(String(format: "Camera %.1f fps • 4K active", Double(capturedFrameCount) / elapsed))
         }
         if activeEncoder() == nil && !encoderSetupFailed {
             createEncoder(width: width, height: height)

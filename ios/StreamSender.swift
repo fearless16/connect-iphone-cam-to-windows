@@ -12,12 +12,18 @@ final class StreamSender {
     private let queue = DispatchQueue(label: "sender")
     var onStatus: ((String) -> Void)?
     var onClientConnected: (() -> Void)?
-    // Keep at most one packet pending in Network.framework. At 4K60, queueing
-    // encoded frames trades a brief stall for seconds of latency and memory use.
+    var onFrameRate: ((Double, UInt64) -> Void)?
+    // Keep the queue short to bound latency, but allow enough packets to absorb
+    // Network.framework completion jitter. A one-packet gate measured ~30 fps
+    // even when the camera was producing native 4K60.
+    private let maxQueuedPackets = 8
+    private var pendingPackets: [Data] = []
     private var sendInFlight = false
     private var connectionReady = false
     private var waitingForKeyFrame = true
     private var sentFrameCount: UInt64 = 0
+    private var droppedFrameCount: UInt64 = 0
+    private var sentFrameStart = ProcessInfo.processInfo.systemUptime
 
     func start() {
         // A foreground transition can call start again. Keep the original
@@ -50,8 +56,11 @@ final class StreamSender {
             self.connection = conn
             self.connectionReady = false
             self.sendInFlight = false
+            self.pendingPackets.removeAll(keepingCapacity: true)
             self.waitingForKeyFrame = true
             self.sentFrameCount = 0
+            self.droppedFrameCount = 0
+            self.sentFrameStart = ProcessInfo.processInfo.systemUptime
             conn.stateUpdateHandler = { [weak self, weak conn] state in
                 self?.queue.async {
                     guard let self, let conn, self.connection === conn else { return }
@@ -67,11 +76,13 @@ final class StreamSender {
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
+                        self.pendingPackets.removeAll(keepingCapacity: true)
                         self.report("PC connection failed: \(error.localizedDescription)")
                     case .cancelled:
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
+                        self.pendingPackets.removeAll(keepingCapacity: true)
                         self.report("PC connection closed")
                     default:
                         break
@@ -103,27 +114,15 @@ final class StreamSender {
 
         queue.async { [weak self] in
             guard let self, let conn = self.connection,
-                  self.connectionReady, !self.sendInFlight else { return }
+                  self.connectionReady else { return }
             guard !self.waitingForKeyFrame || isKeyframe else { return }
             if isKeyframe { self.waitingForKeyFrame = false }
-            self.sendInFlight = true
-            conn.send(content: packet, completion: .contentProcessed { [weak self, weak conn] error in
-                self?.queue.async {
-                    guard let self, let conn, self.connection === conn else { return }
-                    self.sendInFlight = false
-                    if let error {
-                        self.report("Video send failed: \(error.localizedDescription)")
-                        self.connectionReady = false
-                        self.connection = nil
-                        conn.cancel()
-                    } else {
-                        self.sentFrameCount &+= 1
-                        if self.sentFrameCount == 1 {
-                            self.report("First video frame sent")
-                        }
-                    }
-                }
-            })
+            guard self.pendingPackets.count < self.maxQueuedPackets else {
+                self.droppedFrameCount &+= 1
+                return
+            }
+            self.pendingPackets.append(packet)
+            self.pumpSend(connection: conn)
         }
     }
 
@@ -133,6 +132,7 @@ final class StreamSender {
             self?.connection = nil
             self?.connectionReady = false
             self?.sendInFlight = false
+            self?.pendingPackets.removeAll(keepingCapacity: true)
             self?.listener?.cancel()
             self?.listener = nil
         }
@@ -143,5 +143,34 @@ final class StreamSender {
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
         }
+    }
+
+    private func pumpSend(connection: NWConnection) {
+        guard !sendInFlight, !pendingPackets.isEmpty else { return }
+        let packet = pendingPackets.removeFirst()
+        sendInFlight = true
+        connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
+            self?.queue.async {
+                guard let self, let connection, self.connection === connection else { return }
+                self.sendInFlight = false
+                if let error {
+                    self.report("Video send failed: \(error.localizedDescription)")
+                    self.connectionReady = false
+                    self.connection = nil
+                    self.pendingPackets.removeAll(keepingCapacity: true)
+                    connection.cancel()
+                    return
+                }
+                self.sentFrameCount &+= 1
+                if self.sentFrameCount == 1 {
+                    self.report("First video frame sent")
+                }
+                if self.sentFrameCount % 60 == 0 {
+                    let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - self.sentFrameStart)
+                    self.onFrameRate?(Double(self.sentFrameCount) / elapsed, self.droppedFrameCount)
+                }
+                self.pumpSend(connection: connection)
+            }
+        })
     }
 }
