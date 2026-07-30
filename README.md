@@ -2,13 +2,13 @@
 
 This project is developing an iPhone rear-camera **4K60-over-USB** transport for
 Windows. The iOS encoder and `receiver.exe` transport path are the current
-validation target. `iphonecamera.ax` / OBS DirectShow support is experimental;
-it is **not** a verified end-to-end 4K60 camera path yet.
+validation target. The archived DirectShow BaseClasses require their documented
+MSVC build pipeline, so `iphonecamera.ax` is not shipped as a working artifact.
 
 ## Repo layout
 ```
 ios/        Swift app (Xcode project included) — capture + HEVC encode + USB send
-windows/    C++ receiver + self-contained DirectShow virtual camera (CMake)
+windows/    C++ receiver; legacy DirectShow prototype is source-only
 shared/     StreamHeader.swift (mirrors the C protocol)
 protocol/   stream_protocol.h (single source of truth for the wire format)
 docs/       architecture.md, QUICKSTART.md
@@ -22,7 +22,7 @@ Read **`docs/QUICKSTART.md`** — it lists every click and command for both Mac 
 1. ✅ 4K60 capture + HEVC encode (iOS)
 2. ✅ USB send over usbmuxd (iOS)
 3. ✅ Receive + decode (Windows)
-4. ⚠️ Experimental DirectShow virtual camera (not validated for 4K60)
+4. `receiver.exe` is the shipped USB/HEVC transport validator, not a virtual camera
 5. ⏳ Stability test: 30+ min continuous stream
 6. ⏳ Vision person segmentation
 7. ⏳ Metal background blur / replace

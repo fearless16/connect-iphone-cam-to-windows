@@ -1,8 +1,8 @@
-name: Build (iPhone-only backdoor)
+name: Build iPhone USB receiver
 
 # Builds BOTH sides in the cloud. You never compile anything.
 #   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
-#   - Windows: receiver.exe + iphonecamera.ax -> download, run on the PC
+#   - Windows: receiver.exe + runtime DLLs -> download, run on the PC
 # Trigger: push to main, or run manually from the Actions tab.
 
 on:
@@ -74,11 +74,6 @@ jobs:
             git
             make
 
-      - name: Fetch DirectShow BaseClasses
-        run: |
-          git clone --depth 1 https://github.com/microsoft/Windows-classic-samples
-          echo "BASECLASSES_DIR=$(pwd)/Windows-classic-samples/Samples/Win7Samples/multimedia/directshow/baseclasses" >> $GITHUB_ENV
-
       - name: Build receiver.exe and portable contract tests
         run: |
           sh "${{ github.workspace }}/tests/virtual_camera_source_contract.sh" \
@@ -104,23 +99,6 @@ jobs:
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/
           ldd receiver.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
-
-      - name: Build experimental iphonecamera.ax
-        run: |
-          # Build the BaseClasses with the same MinGW C++ ABI as the filter.
-          # A Microsoft-built Strmbase.lib cannot be linked by this toolchain.
-          g++ -std=c++20 -O2 -shared -fpermissive -fms-extensions -DNOMINMAX -DUNICODE -D_UNICODE \
-            -include "${{ github.workspace }}/windows/directshow_compat.h" \
-            -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
-            -I"${{ github.workspace }}/protocol" \
-            "${{ github.workspace }}/windows/virtual_camera.cpp" \
-            "$BASECLASSES_DIR"/*.cpp \
-            "${{ github.workspace }}/windows/iphonecamera.def" \
-            -o iphonecamera.ax \
-            $(pkg-config --libs libavcodec libavutil libswscale) \
-            $(pkg-config --libs libusbmuxd-2.0) -lws2_32 -ld3d11 -lstrmiids -lole32 -loleaut32 -lwinmm
-          ls -lh iphonecamera.ax
-          cp iphonecamera.ax windows-binaries/
 
       - uses: actions/upload-artifact@v7
         with:
