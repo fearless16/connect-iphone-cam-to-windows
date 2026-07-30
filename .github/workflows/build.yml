@@ -69,6 +69,11 @@ jobs:
       - name: Build receiver.exe (transport test)
         run: |
           g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/protocol" \
+            "${{ github.workspace }}/tests/protocol_selftest.cpp" \
+            -o protocol_selftest.exe
+          ./protocol_selftest.exe
+          g++ -std=c++20 -O2 \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \

@@ -10,6 +10,9 @@ final class StreamSender {
     private var listener: NWListener?
     private var connection: NWConnection?
     private let queue = DispatchQueue(label: "sender")
+    // Keep at most one packet pending in Network.framework. At 4K60, queueing
+    // encoded frames trades a brief stall for seconds of latency and memory use.
+    private var sendInFlight = false
 
     func start() {
         let params = NWParameters.tcp
@@ -23,10 +26,13 @@ final class StreamSender {
             print("SENDER: listener \(s)")
         }
         listener?.newConnectionHandler = { [weak self] conn in
-            self?.connection?.cancel()
-            self?.connection = conn
-            conn.start(queue: self?.queue ?? .main)
-            print("SENDER: client connected")
+            self?.queue.async {
+                self?.connection?.cancel()
+                self?.connection = conn
+                self?.sendInFlight = false
+                conn.start(queue: self?.queue ?? .main)
+                print("SENDER: client connected")
+            }
         }
         listener?.start(queue: queue)
         print("SENDER: listening on port \(StreamSender.port)")
@@ -34,15 +40,32 @@ final class StreamSender {
 
     /// Send a complete protocol packet (header + Annex-B frame).
     func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, frame: Data) {
-        guard let conn = connection else { return }
-        var header = StreamHeader(
+        guard frame.count <= Int(UInt32.max) else {
+            print("ERROR: encoded frame exceeds protocol limit")
+            return
+        }
+        let header = StreamHeader(
             magic: StreamHeader.magic,
             frameNumber: frameNumber,
             timestampUs: timestampUs,
             codec: codec,
             frameSize: UInt32(frame.count)
         ).encode()
-        conn.send(content: header, completion: .contentProcessed({ _ in }))
-        conn.send(content: frame, completion: .contentProcessed({ _ in }))
+        var packet = Data(capacity: header.count + frame.count)
+        packet.append(header)
+        packet.append(frame)
+
+        queue.async { [weak self] in
+            guard let self, let conn = self.connection, !self.sendInFlight else { return }
+            self.sendInFlight = true
+            conn.send(content: packet, completion: .contentProcessed { error in
+                self.queue.async {
+                    self.sendInFlight = false
+                    if let error {
+                        print("SENDER: send failed \(error)")
+                    }
+                }
+            })
+        }
     }
 }

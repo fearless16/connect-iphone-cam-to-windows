@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 #include <chrono>
+#include <winsock2.h>
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -19,6 +20,7 @@ extern "C" {
 }
 
 #define DEVICE_PORT 12345u
+static constexpr bool kSaveReceivedStream = false;
 
 static int connect_to_device() {
     usbmuxd_device_info *list = nullptr;
@@ -55,6 +57,7 @@ static AVCodecContext *init_decoder() {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
     if (!codec) { fprintf(stderr, "ERROR: HEVC decoder not found\n"); return nullptr; }
     AVCodecContext *ctx = avcodec_alloc_context3(codec);
+    if (!ctx) { fprintf(stderr, "ERROR: avcodec_alloc_context3 failed\n"); return nullptr; }
 
     // D3D11VA hardware acceleration.
     AVBufferRef *hw = nullptr;
@@ -68,6 +71,7 @@ static AVCodecContext *init_decoder() {
 
     if (avcodec_open2(ctx, codec, nullptr) < 0) {
         fprintf(stderr, "ERROR: avcodec_open2 failed\n");
+        avcodec_free_context(&ctx);
         return nullptr;
     }
     return ctx;
@@ -77,8 +81,8 @@ int main() {
     int fd = connect_to_device();
     if (fd < 0) return 1;
 
-    // Step 6: receive and save raw .h265 (decoder is optional below).
-    FILE *out = fopen("received.h265", "wb");
+    // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
+    FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     AVCodecContext *dec = init_decoder();
 
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
@@ -87,22 +91,22 @@ int main() {
 
     while (true) {
         if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE)) break;
-        if (!stream_magic_match(hdr.data())) {
-            fprintf(stderr, "ERROR: bad magic, stream desync\n");
+        stream_header_t h = {};
+        if (!stream_header_read(hdr.data(), &h) || !stream_header_is_valid(&h)) {
+            fprintf(stderr, "ERROR: invalid stream header, stream desync\n");
             break;
         }
-        stream_header_t *h = reinterpret_cast<stream_header_t *>(hdr.data());
-        std::vector<uint8_t> frame(h->frame_size);
-        if (!read_exact(fd, frame.data(), h->frame_size)) break;
+        std::vector<uint8_t> frame(h.frame_size);
+        if (!read_exact(fd, frame.data(), h.frame_size)) break;
 
-        fwrite(frame.data(), 1, h->frame_size, out);
+        if (out) fwrite(frame.data(), 1, h.frame_size, out);
         frames++;
 
         // Step 7: decode with FFmpeg and count.
         if (dec) {
             AVPacket *pkt = av_packet_alloc();
             pkt->data = frame.data();
-            pkt->size = static_cast<int>(h->frame_size);
+            pkt->size = static_cast<int>(h.frame_size);
             if (avcodec_send_packet(dec, pkt) == 0) {
                 AVFrame *f = av_frame_alloc();
                 while (avcodec_receive_frame(dec, f) == 0) decoded++;
@@ -119,7 +123,7 @@ int main() {
         }
     }
 
-    fclose(out);
+    if (out) fclose(out);
     if (dec) avcodec_free_context(&dec);
     closesocket(fd);
     printf("INFO: done, received %llu frames\n",

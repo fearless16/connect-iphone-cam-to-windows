@@ -7,6 +7,7 @@
 // Build links: strmiids.lib, strmbase.lib, avcodec.lib, avutil.lib, swscale.lib,
 //              usbmuxd.lib, ws2_32.lib, d3d11.lib
 
+#include <winsock2.h>
 #include <streams.h>
 #include <cstdint>
 #include <atomic>
@@ -65,8 +66,14 @@ static void worker() {
     if (fd < 0) { fprintf(stderr, "CAMERA: connect failed\n"); return; }
 
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+    if (!codec) { fprintf(stderr, "CAMERA: HEVC decoder unavailable\n"); closesocket(fd); return; }
     AVCodecContext *dec = avcodec_alloc_context3(codec);
-    avcodec_open2(dec, codec, nullptr);
+    if (!dec || avcodec_open2(dec, codec, nullptr) < 0) {
+        fprintf(stderr, "CAMERA: decoder initialization failed\n");
+        avcodec_free_context(&dec);
+        closesocket(fd);
+        return;
+    }
 
     // RGB32 destination buffers
     std::vector<uint8_t> rgb(FrameRing::FRAME_BYTES);
@@ -78,14 +85,17 @@ static void worker() {
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     while (g_running.load()) {
         if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE)) break;
-        if (!stream_magic_match(hdr.data())) { fprintf(stderr, "CAMERA: desync\n"); break; }
-        auto *h = reinterpret_cast<stream_header_t *>(hdr.data());
-        std::vector<uint8_t> frame(h->frame_size);
-        if (!read_exact(fd, frame.data(), h->frame_size)) break;
+        stream_header_t h = {};
+        if (!stream_header_read(hdr.data(), &h) || !stream_header_is_valid(&h)) {
+            fprintf(stderr, "CAMERA: invalid stream header\n");
+            break;
+        }
+        std::vector<uint8_t> frame(h.frame_size);
+        if (!read_exact(fd, frame.data(), h.frame_size)) break;
 
         AVPacket *pkt = av_packet_alloc();
         pkt->data = frame.data();
-        pkt->size = static_cast<int>(h->frame_size);
+        pkt->size = static_cast<int>(h.frame_size);
         AVFrame *yuv = av_frame_alloc();
         if (avcodec_send_packet(dec, pkt) == 0) {
             if (avcodec_receive_frame(dec, yuv) == 0) {

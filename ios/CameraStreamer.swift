@@ -12,9 +12,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let session = AVCaptureSession()
     private var encoder: VTCompressionSession?
     private var outputFile: FileHandle?
+    // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
+    // Leave it off for live streaming; enable only while diagnosing encoding.
+    private let saveEncodedStream = false
     private let sender = StreamSender()
     private var frameNumber: UInt32 = 0
-    private var wroteParameterSets = false
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
 
@@ -73,16 +75,20 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         do {
             try device.lockForConfiguration()
-            if let fmt = device.formats.first(where: { format in
+            guard let fmt = device.formats.first(where: { format in
                 let d = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
                 return d.width == 3840 && d.height == 2160 &&
                     format.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= 60 })
-            }) {
-                device.activeFormat = fmt
-                let dur = CMTime(value: 1, timescale: 60)
-                device.activeVideoMinFrameDuration = dur
-                device.activeVideoMaxFrameDuration = dur
+            }) else {
+                print("ERROR: this camera does not support 3840x2160 at 60 fps")
+                device.unlockForConfiguration()
+                session.commitConfiguration()
+                return
             }
+            device.activeFormat = fmt
+            let dur = CMTime(value: 1, timescale: 60)
+            device.activeVideoMinFrameDuration = dur
+            device.activeVideoMaxFrameDuration = dur
             device.unlockForConfiguration()
         } catch {
             print("ERROR: lockForConfiguration \(error)")
@@ -107,7 +113,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         session.commitConfiguration()
 
-        openOutputFile()
+        if saveEncodedStream { openOutputFile() }
         createEncoder(width: 3840, height: 2160)
         session.startRunning()
         sender.start()   // Step 5: begin listening for the Windows receiver
@@ -143,6 +149,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 80_000_000))
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 60))
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 60))
         VTCompressionSessionPrepareToEncodeFrames(enc)
     }
 
@@ -152,13 +161,17 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard let enc = encoder, let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         var flags: VTEncodeInfoFlags = []
-        VTCompressionSessionEncodeFrame(enc,
-                                        imageBuffer: px,
-                                        presentationTimeStamp: pts,
-                                        duration: .invalid,
-                                        frameProperties: nil,
-                                        sourceFrameRefcon: nil,
-                                        infoFlagsOut: &flags)
+        let status = VTCompressionSessionEncodeFrame(enc,
+                                                     imageBuffer: px,
+                                                     presentationTimeStamp: pts,
+                                                     duration: .invalid,
+                                                     frameProperties: nil,
+                                                     sourceFrameRefcon: nil,
+                                                     infoFlagsOut: &flags)
+        if status != noErr {
+            print("ERROR: VTCompressionSessionEncodeFrame \(status)")
+            return
+        }
         frameNumber &+= 1
         let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - frameStartUptime)
         if frameNumber % 600 == 0 {
@@ -172,8 +185,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         var annexB = Data()
 
-        // Emit VPS/SPS/PPS once (HEVC parameter sets).
-        if !wroteParameterSets {
+        // A new Windows receiver can attach at any time. Include VPS/SPS/PPS
+        // with every IDR so it can decode without waiting for an app restart.
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer,
+                                                                    createIfNecessary: false) as? [[CFString: Any]]
+        let isKeyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
+        if isKeyframe {
             var count: Int = 0
             CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
                 desc,
@@ -197,7 +214,6 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     annexB.append(Data(bytes: ptr, count: len))
                 }
             }
-            wroteParameterSets = true
         }
 
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
@@ -227,7 +243,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             offset += nalLen
         }
 
-        outputFile?.write(annexB)
+        if saveEncodedStream { outputFile?.write(annexB) }
         sender.send(frameNumber: frameNumber,
                     timestampUs: monotonicUs(),
                     codec: StreamCodec.hevc.rawValue,
