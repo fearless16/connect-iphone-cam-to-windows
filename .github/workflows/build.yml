@@ -89,7 +89,6 @@ jobs:
             -o virtual_camera_contract_test.exe
           ./virtual_camera_contract_test.exe
           g++ -std=c++20 -O2 \
-            -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
             -o receiver.exe \
