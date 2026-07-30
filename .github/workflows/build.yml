@@ -29,6 +29,7 @@ jobs:
 
       - name: Check iPhone preview source contract
         run: |
+          plutil -extract NSLocalNetworkUsageDescription raw "$GITHUB_WORKSPACE/ios/Info.plist"
           sh tests/ios_preview_source_contract.sh \
             ios/AppDelegate.swift \
             ios/CameraViewController.swift \
