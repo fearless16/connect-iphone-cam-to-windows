@@ -34,13 +34,29 @@ void GpuFrameConsumer::Reset() noexcept {
 }
 
 HRESULT GpuFrameConsumer::OpenControlBlock() {
-    if (control_) return S_OK;
+    if (control_) {
+        if (valid(*control_)) return S_OK;
+        // The receiver is replacing its mapping after a reconnect. Drop this
+        // view and retry on the next RequestSample rather than retaining a
+        // half-published block forever.
+        UnmapViewOfFile(control_);
+        control_ = nullptr;
+        CloseHandle(mapping_);
+        mapping_ = nullptr;
+        return MF_E_TRANSFORM_NEED_MORE_INPUT;
+    }
     mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kControlMappingName);
     if (!mapping_) return HRESULT_FROM_WIN32(GetLastError());
     control_ = static_cast<ControlBlock*>(MapViewOfFile(mapping_, FILE_MAP_READ,
                                                          0, 0, sizeof(ControlBlock)));
     if (!control_) return HRESULT_FROM_WIN32(GetLastError());
-    if (!valid(*control_)) return MF_E_INVALIDMEDIATYPE;
+    if (!valid(*control_)) {
+        UnmapViewOfFile(control_);
+        control_ = nullptr;
+        CloseHandle(mapping_);
+        mapping_ = nullptr;
+        return MF_E_TRANSFORM_NEED_MORE_INPUT;
+    }
     return S_OK;
 }
 

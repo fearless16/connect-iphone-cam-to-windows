@@ -75,8 +75,14 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     control_ = static_cast<ControlBlock*>(MapViewOfFile(mapping_, FILE_MAP_WRITE,
                                                          0, 0, sizeof(ControlBlock)));
     if (!control_) return HRESULT_FROM_WIN32(GetLastError());
+    const uint32_t previous_generation = iphone_camera::gpu_transport::valid(*control_)
+        ? control_->generation : 0;
+    // Invalidate first and publish magic last. A Frame Server reader then
+    // observes either a complete old block, a retryable invalid block, or a
+    // complete new block—never a mixed producer generation.
+    control_->magic = 0;
+    MemoryBarrier();
     ZeroMemory(control_, sizeof(*control_));
-    control_->magic = iphone_camera::gpu_transport::kMagic;
     control_->version = iphone_camera::gpu_transport::kVersion;
     control_->size = sizeof(*control_);
     control_->width = static_cast<uint32_t>(frame->width);
@@ -84,6 +90,7 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     control_->frame_rate_numerator = 60;
     control_->frame_rate_denominator = 1;
     control_->producer_pid = GetCurrentProcessId();
+    control_->generation = previous_generation + 1;
 
     Microsoft::WRL::ComPtr<IDXGIDevice> dxgi_device;
     Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
@@ -142,6 +149,8 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     }
     origin_source_us_ = source_timestamp_us;
     origin_time_100ns_ = current_time_100ns();
+    MemoryBarrier();
+    control_->magic = iphone_camera::gpu_transport::kMagic;
     return S_OK;
 }
 
