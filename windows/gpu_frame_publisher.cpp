@@ -1,5 +1,6 @@
 #include "gpu_frame_publisher.h"
 
+#include <cstdio>
 #include <dxgi.h>
 #include <sddl.h>
 
@@ -42,8 +43,15 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     device_->GetImmediateContext(&context_);
     D3D11_TEXTURE2D_DESC source_desc{};
     decoder_texture->GetDesc(&source_desc);
-    if (source_desc.Width != 3840 || source_desc.Height != 2160 || source_desc.Format != DXGI_FORMAT_NV12)
+    // HEVC decoder surfaces are coded-size aligned (for example 4096x2176
+    // for a visible 3840x2160 frame). Advertise/copy the visible frame, not
+    // that padded allocation, otherwise the virtual camera rejects 4K input.
+    if (frame->width != 3840 || frame->height != 2160 || source_desc.Format != DXGI_FORMAT_NV12) {
+        fprintf(stderr, "ERROR: unsupported GPU frame: visible=%dx%d surface=%ux%u format=%u\n",
+                frame->width, frame->height, source_desc.Width, source_desc.Height,
+                static_cast<unsigned>(source_desc.Format));
         return E_INVALIDARG;
+    }
 
     PSECURITY_DESCRIPTOR security_descriptor = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -66,8 +74,8 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     control_->magic = iphone_camera::gpu_transport::kMagic;
     control_->version = iphone_camera::gpu_transport::kVersion;
     control_->size = sizeof(*control_);
-    control_->width = source_desc.Width;
-    control_->height = source_desc.Height;
+    control_->width = static_cast<uint32_t>(frame->width);
+    control_->height = static_cast<uint32_t>(frame->height);
     control_->frame_rate_numerator = 60;
     control_->frame_rate_denominator = 1;
     control_->producer_pid = GetCurrentProcessId();
@@ -81,6 +89,10 @@ HRESULT GpuFramePublisher::Initialize(const AVFrame* frame, uint64_t source_time
     control_->adapter.high_part = adapter_desc.AdapterLuid.HighPart;
 
     D3D11_TEXTURE2D_DESC ring_desc = source_desc;
+    ring_desc.Width = static_cast<UINT>(frame->width);
+    ring_desc.Height = static_cast<UINT>(frame->height);
+    ring_desc.MipLevels = 1;
+    ring_desc.ArraySize = 1;
     ring_desc.BindFlags = 0;
     ring_desc.CPUAccessFlags = 0;
     ring_desc.Usage = D3D11_USAGE_DEFAULT;
@@ -113,8 +125,13 @@ HRESULT GpuFramePublisher::Publish(const AVFrame* frame, uint64_t source_timesta
     const FrameSlot& published = control_->slots[slot_index];
     HRESULT hr = mutexes_[slot_index]->AcquireSync(published.producer_key, 1000);
     if (FAILED(hr)) return hr;
+    D3D11_BOX visible_box{};
+    visible_box.right = static_cast<UINT>(frame->width);
+    visible_box.bottom = static_cast<UINT>(frame->height);
+    visible_box.back = 1;
     context_->CopySubresourceRegion(textures_[slot_index].Get(), 0, 0, 0, 0,
-                                    decoder_texture, static_cast<UINT>(reinterpret_cast<uintptr_t>(frame->data[1])), nullptr);
+                                    decoder_texture, static_cast<UINT>(reinterpret_cast<uintptr_t>(frame->data[1])),
+                                    &visible_box);
     hr = mutexes_[slot_index]->ReleaseSync(published.consumer_key);
     if (FAILED(hr)) return hr;
 
