@@ -4,8 +4,12 @@
 <dict>
     <key>CFBundleIdentifier</key>
     <string>com.example.iphonecamerastream</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleName</key>
     <string>iPhoneCameraStream</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>0.1</string>
     <key>CFBundleVersion</key>

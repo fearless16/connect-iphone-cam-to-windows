@@ -31,6 +31,8 @@ jobs:
         run: |
           APP="$GITHUB_WORKSPACE/ios/build/Release-iphoneos/iPhoneCameraStream.app"
           test -d "$APP"
+          EXECUTABLE=$(plutil -extract CFBundleExecutable raw -o - "$APP/Info.plist")
+          test -x "$APP/$EXECUTABLE"
           echo "APP=$APP"
           mkdir -p Payload
           cp -r "$APP" Payload/
