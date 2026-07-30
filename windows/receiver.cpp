@@ -127,6 +127,22 @@ static bool read_exact(int fd, uint8_t *buf, size_t n, const char *part) {
         int r = recv(fd, reinterpret_cast<char *>(buf + got),
                      static_cast<int>(n - got), 0);
         if (r <= 0) {
+            // libusbmuxd on Windows can return a non-blocking socket. WSAEWOULDBLOCK
+            // is not a disconnect; wait for the iPhone's next encoded frame.
+            if (r == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+                fd_set readable{};
+                FD_SET(static_cast<SOCKET>(fd), &readable);
+                timeval timeout{};
+                timeout.tv_sec = 5;
+                const int ready = select(0, &readable, nullptr, nullptr, &timeout);
+                if (ready > 0) continue;
+                if (ready == 0) {
+                    fprintf(stderr, "WARN: timed out waiting for %s\n", part);
+                } else {
+                    fprintf(stderr, "ERROR: select %s failed: WSA=%d\n", part, WSAGetLastError());
+                }
+                return false;
+            }
             if (r == 0) {
                 fprintf(stderr, "ERROR: iPhone closed connection while reading %s (%zu/%zu bytes)\n", part, got, n);
             } else {

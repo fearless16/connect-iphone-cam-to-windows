@@ -47,6 +47,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                object: session,
                                queue: .main) { [weak self] _ in
                 self?.resumeAfterForeground()
+            },
+            center.addObserver(forName: .AVCaptureSessionRuntimeError,
+                               object: session,
+                               queue: .main) { [weak self] notification in
+                self?.handleSessionRuntimeError(notification)
             }
         ]
     }
@@ -415,6 +420,21 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard isConfigured, !stopped else { return }
         invalidateEncoder(reason: nil)
         if !session.isRunning { session.startRunning() }
+        sender.start()
         report("Camera resumed • waiting for encoder")
+    }
+
+    private func handleSessionRuntimeError(_ notification: Notification) {
+        guard isConfigured, !stopped else { return }
+        let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError
+        invalidateEncoder(reason: "Camera runtime reset")
+        // A media-services reset invalidates the capture pipeline without a
+        // foreground notification. Restarting the configured session here
+        // makes camera focus switches and interruption recovery self-healing.
+        if error?.code == .mediaServicesWereReset || !session.isRunning {
+            session.startRunning()
+        }
+        sender.start()
+        requestKeyFrame()
     }
 }

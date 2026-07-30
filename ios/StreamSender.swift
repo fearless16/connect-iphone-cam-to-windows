@@ -20,6 +20,9 @@ final class StreamSender {
     private var sentFrameCount: UInt64 = 0
 
     func start() {
+        // A foreground transition can call start again. Keep the original
+        // listening socket alive rather than creating a competing listener.
+        guard listener == nil else { return }
         let params = NWParameters.tcp
         do {
             listener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
@@ -110,6 +113,9 @@ final class StreamSender {
                     self.sendInFlight = false
                     if let error {
                         self.report("Video send failed: \(error.localizedDescription)")
+                        self.connectionReady = false
+                        self.connection = nil
+                        conn.cancel()
                     } else {
                         self.sentFrameCount &+= 1
                         if self.sentFrameCount == 1 {
