@@ -17,6 +17,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var reportedNon4KFrame = false
     private let encoderStateLock = NSLock()
     private var forceNextKeyFrame = false
+    private var isConfigured = false
+    private var stopped = false
+    private var notificationTokens: [NSObjectProtocol] = []
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
     // Leave it off for live streaming; enable only while diagnosing encoding.
@@ -25,6 +28,32 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var frameNumber: UInt32 = 0
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        notificationTokens = [
+            center.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                               object: nil,
+                               queue: .main) { [weak self] _ in
+                self?.resumeAfterForeground()
+            },
+            center.addObserver(forName: .AVCaptureSessionWasInterrupted,
+                               object: session,
+                               queue: .main) { [weak self] _ in
+                self?.invalidateEncoder(reason: "Camera interrupted")
+            },
+            center.addObserver(forName: .AVCaptureSessionInterruptionEnded,
+                               object: session,
+                               queue: .main) { [weak self] _ in
+                self?.resumeAfterForeground()
+            }
+        ]
+    }
+
+    deinit {
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
+    }
 
     // MARK: - Step 1: permission + session start
     func start() {
@@ -121,8 +150,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         session.commitConfiguration()
 
         if saveEncodedStream { openOutputFile() }
-        encoder = nil
-        encoderSetupFailed = false
+        isConfigured = true
+        stopped = false
+        invalidateEncoder(reason: nil)
         reportedNon4KFrame = false
         session.startRunning()
         sender.onStatus = { [weak self] message in
@@ -185,7 +215,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             report("HEVC encoder prepare failed: \(prepareStatus)")
             return
         }
+        encoderStateLock.lock()
         encoder = enc
+        encoderSetupFailed = false
+        encoderStateLock.unlock()
     }
 
     func captureOutput(_ output: AVCaptureOutput,
@@ -201,10 +234,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             }
             return
         }
-        if encoder == nil && !encoderSetupFailed {
+        if activeEncoder() == nil && !encoderSetupFailed {
             createEncoder(width: width, height: height)
         }
-        guard let enc = encoder else { return }
+        guard let enc = activeEncoder() else { return }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let frameProperties: CFDictionary? = consumeForcedKeyFrame()
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame as String: true] as CFDictionary
@@ -218,6 +251,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                                      sourceFrameRefcon: nil,
                                                      infoFlagsOut: &flags)
         if status != noErr {
+            if status == kVTInvalidSessionErr {
+                invalidateEncoder(reason: "Encoder reset after interruption")
+                return
+            }
             report("Frame encoder error: \(status)")
             return
         }
@@ -327,10 +364,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     func stop() {
+        stopped = true
         session.stopRunning()
-        if let encoder {
-            VTCompressionSessionCompleteFrames(encoder, untilPresentationTimeStamp: .invalid)
-        }
+        invalidateEncoder(reason: nil)
         sender.stop()
         try? outputFile?.close()
     }
@@ -354,5 +390,31 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let shouldForce = forceNextKeyFrame
         forceNextKeyFrame = false
         return shouldForce
+    }
+
+    private func activeEncoder() -> VTCompressionSession? {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return encoder
+    }
+
+    private func invalidateEncoder(reason: String?) {
+        encoderStateLock.lock()
+        let oldEncoder = encoder
+        encoder = nil
+        encoderSetupFailed = false
+        forceNextKeyFrame = true
+        encoderStateLock.unlock()
+        if let oldEncoder {
+            VTCompressionSessionInvalidate(oldEncoder)
+        }
+        if let reason { report(reason) }
+    }
+
+    private func resumeAfterForeground() {
+        guard isConfigured, !stopped else { return }
+        invalidateEncoder(reason: nil)
+        if !session.isRunning { session.startRunning() }
+        report("Camera resumed • waiting for encoder")
     }
 }
