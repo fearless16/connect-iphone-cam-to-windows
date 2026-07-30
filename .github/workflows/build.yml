@@ -112,14 +112,18 @@ jobs:
           while IFS= read -r header; do
             perl -pi -e 's/\b([0-9]+)I64\b/${1}LL/g' "$header"
           done < <(grep -rlE '[0-9]+I64' "$BASECLASSES_DIR")
+          # Build the BaseClasses with the same MinGW C++ ABI as the filter.
+          # A Microsoft-built Strmbase.lib cannot be linked by this toolchain.
           g++ -std=c++20 -O2 -shared -fpermissive -fms-extensions -DNOMINMAX -DUNICODE -D_UNICODE \
+            -include "${{ github.workspace }}/windows/directshow_compat.h" \
             -I"$BASECLASSES_DIR" -I"$BASECLASSES_DIR/.." \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/virtual_camera.cpp" \
+            "$BASECLASSES_DIR"/*.cpp \
             "${{ github.workspace }}/windows/iphonecamera.def" \
             -o iphonecamera.ax \
             $(pkg-config --libs libavcodec libavutil libswscale) \
-            $(pkg-config --libs libusbmuxd-2.0) -lws2_32 -ld3d11 -lstrmiids -lstrmbase
+            $(pkg-config --libs libusbmuxd-2.0) -lws2_32 -ld3d11 -lstrmiids -lole32 -loleaut32 -lwinmm
           ls -lh iphonecamera.ax
           cp iphonecamera.ax windows-binaries/
 
