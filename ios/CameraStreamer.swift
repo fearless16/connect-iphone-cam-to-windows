@@ -20,6 +20,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var forceNextKeyFrame = false
     private var isConfigured = false
     private var stopped = false
+    // Accessed only on sessionQueue. Camera/VideoToolbox recovery is
+    // deliberately serialized so a foreground notification, an interruption,
+    // and an encode failure cannot rebuild the session concurrently.
+    private var recoveryScheduled = false
+    private var recoveryAttempt = 0
     private var videoDevice: AVCaptureDevice?
     private var notificationTokens: [NSObjectProtocol] = []
     private var pressureObservation: NSKeyValueObservation?
@@ -275,11 +280,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                                      sourceFrameRefcon: nil,
                                                      infoFlagsOut: &flags)
         if status != noErr {
-            if status == kVTInvalidSessionErr {
-                invalidateEncoder(reason: "Encoder reset after interruption")
-                return
-            }
-            report("Frame encoder error: \(status)")
+            invalidateEncoder(reason: status == kVTInvalidSessionErr
+                              ? "Encoder reset after interruption"
+                              : "Frame encoder error: \(status)")
+            // Any VideoToolbox failure can leave the session alive while its
+            // hardware encoder is no longer usable. Rebuild it asynchronously
+            // with bounded backoff instead of requiring an app restart.
+            scheduleRecovery(reason: "Encoder recovery")
             return
         }
         frameNumber &+= 1
@@ -616,7 +623,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func resumeAfterForeground() {
         sessionQueue.async { [weak self] in
-            self?.recoverSession(reason: "Camera resumed • waiting for encoder")
+            guard let self else { return }
+            self.recoveryAttempt = 0
+            self.recoverSession(reason: "Camera resumed • waiting for encoder")
         }
     }
 
@@ -633,7 +642,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             guard let self, self.isConfigured, !self.stopped else { return }
             self.invalidateEncoder(reason: "Camera runtime reset")
             if error?.code == .mediaServicesWereReset || !self.session.isRunning {
-                self.recoverSession(reason: "Camera runtime reset")
+                self.scheduleRecoveryOnSessionQueue(reason: "Camera runtime reset")
             }
         }
     }
@@ -698,12 +707,41 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         session.beginConfiguration()
         let configured = apply4K60Format(to: device)
         session.commitConfiguration()
-        guard configured else { return }
+        guard configured else {
+            scheduleRecoveryOnSessionQueue(reason: "4K60 configuration recovery")
+            return
+        }
         invalidateEncoder(reason: nil)
         if !session.isRunning { session.startRunning() }
+        guard session.isRunning else {
+            scheduleRecoveryOnSessionQueue(reason: "Camera start recovery")
+            return
+        }
         refreshActiveFormatTelemetry(device)
         sender.start()
         requestKeyFrame()
+        recoveryAttempt = 0
         report(reason)
+    }
+
+    private func scheduleRecovery(reason: String) {
+        sessionQueue.async { [weak self] in
+            self?.scheduleRecoveryOnSessionQueue(reason: reason)
+        }
+    }
+
+    private func scheduleRecoveryOnSessionQueue(reason: String) {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard isConfigured, !stopped, !recoveryScheduled else { return }
+        recoveryScheduled = true
+        let delay = min(8.0, 0.25 * pow(2.0, Double(recoveryAttempt)))
+        recoveryAttempt = min(recoveryAttempt + 1, 5)
+        report(String(format: "%@ • retrying in %.2fs", reason, delay))
+        sessionQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.recoveryScheduled = false
+            guard self.isConfigured, !self.stopped else { return }
+            self.recoverSession(reason: "\(reason) recovered")
+        }
     }
 }
