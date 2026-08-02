@@ -52,7 +52,12 @@ int wmain(int argc, wchar_t **argv) {
     IMFVirtualCamera *camera = nullptr;
     hr = MFCreateVirtualCamera(MFVirtualCameraType_SoftwareCameraSource,
                                MFVirtualCameraLifetime_System,
-                               MFVirtualCameraAccess_CurrentUser,
+                               // The media-source COM class is registered under HKLM so the
+                               // Windows Frame Server can activate it.  Keep the virtual-camera
+                               // scope machine-wide as well: running the installer elevated with
+                               // CurrentUser would otherwise create the camera for the elevated
+                               // token rather than the interactive OBS user.
+                               MFVirtualCameraAccess_AllUsers,
                                kIPhoneCameraFriendlyName,
                                sourceId,
                                categories,

@@ -4,6 +4,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$principal = [Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Run this script with PowerShell as Administrator. The Windows Frame Server requires machine-wide COM and virtual-camera registration.'
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dll = Join-Path $root 'IPhoneCameraStreamSource.dll'
 $controller = Join-Path $root 'IPhoneCameraVcamController.exe'
@@ -23,7 +28,8 @@ if ($Remove) {
 }
 
 # Registration must be elevated: Windows Frame Server cannot load a per-user
-# COM source. Start this script with "Run with PowerShell as Administrator".
+# COM source. The controller creates an AllUsers virtual camera in this same
+# elevation context so it is visible to the normal OBS user.
 & $systemRegsvr $dll
 if ($LASTEXITCODE -ne 0) { throw "regsvr32 registration failed: $LASTEXITCODE" }
 & $controller
