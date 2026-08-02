@@ -114,6 +114,57 @@ static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* f
     return formats[0];
 }
 
+// Windows can prefer an unrelated Wi-Fi default route when both Wi-Fi and the
+// iPhone USB-tether adapter have the same metric. Bind explicitly to the IPv4
+// address on the Apple adapter whose gateway is the requested iPhone host.
+static bool bind_iphone_usb_interface(SOCKET socket, const char* host) {
+    IN_ADDR requestedHost{};
+    if (InetPtonA(AF_INET, host, &requestedHost) != 1) return false;
+
+    ULONG bytes = 16 * 1024;
+    std::vector<uint8_t> storage(bytes);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+    ULONG status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
+                                        nullptr, adapters, &bytes);
+    if (status == ERROR_BUFFER_OVERFLOW) {
+        storage.resize(bytes);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+        status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
+                                      nullptr, adapters, &bytes);
+    }
+    if (status != NO_ERROR) return false;
+
+    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+        const wchar_t* name = adapter->FriendlyName ? adapter->FriendlyName : L"";
+        const wchar_t* description = adapter->Description ? adapter->Description : L"";
+        if (!wcsstr(name, L"Apple") && !wcsstr(description, L"Apple")) continue;
+
+        bool gatewayMatches = false;
+        for (auto* gateway = adapter->FirstGatewayAddress; gateway; gateway = gateway->Next) {
+            if (gateway->Address.lpSockaddr->sa_family != AF_INET) continue;
+            const auto* address = reinterpret_cast<const sockaddr_in*>(gateway->Address.lpSockaddr);
+            if (address->sin_addr.S_un.S_addr == requestedHost.S_un.S_addr) {
+                gatewayMatches = true;
+                break;
+            }
+        }
+        if (!gatewayMatches) continue;
+
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast; unicast = unicast->Next) {
+            if (unicast->Address.lpSockaddr->sa_family != AF_INET) continue;
+            const auto* local = reinterpret_cast<const sockaddr_in*>(unicast->Address.lpSockaddr);
+            if (::bind(socket, reinterpret_cast<const sockaddr*>(local), sizeof(*local)) == 0) {
+                char address[INET_ADDRSTRLEN]{};
+                InetNtopA(AF_INET, &local->sin_addr, address, sizeof(address));
+                printf("INFO: bound iPhone USB network source=%s\n", address);
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
 static SOCKET connect_tcp(const char* host) {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -126,11 +177,10 @@ static SOCKET connect_tcp(const char* host) {
     for (addrinfo* item = results; item; item = item->ai_next) {
         SOCKET candidate = ::socket(item->ai_family, item->ai_socktype, item->ai_protocol);
         if (candidate == INVALID_SOCKET) continue;
-        const DWORD timeoutMs = 1500;
-        setsockopt(candidate, SOL_SOCKET, SO_RCVTIMEO,
-                   reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
-        setsockopt(candidate, SOL_SOCKET, SO_SNDTIMEO,
-                   reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+        if (item->ai_family != AF_INET || !bind_iphone_usb_interface(candidate, host)) {
+            closesocket(candidate);
+            continue;
+        }
         if (::connect(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0) {
             socket = candidate;
             break;
@@ -202,30 +252,44 @@ static SOCKET connect_to_device(const char* usbNetworkHost) {
 // Naive blocking read-until-full.
 static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part) {
     size_t got = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (got < n) {
+        // Wait before each read instead of imposing a short SO_RCVTIMEO on the
+        // socket. A 4K HEVC packet can be large, and a brief USB scheduling
+        // stall must not be treated as a broken iPhone connection.
+        fd_set readable{};
+        FD_SET(fd, &readable);
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            fprintf(stderr, "WARN: timed out waiting for %s\n", part);
+            return false;
+        }
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        timeval timeout{};
+        timeout.tv_sec = static_cast<long>(remaining.count() / 1'000);
+        timeout.tv_usec = static_cast<long>((remaining.count() % 1'000) * 1'000);
+        const int ready = select(0, &readable, nullptr, nullptr, &timeout);
+        if (ready == 0) {
+            fprintf(stderr, "WARN: timed out waiting for %s\n", part);
+            return false;
+        }
+        if (ready < 0) {
+            fprintf(stderr, "ERROR: select %s failed: WSA=%d\n", part, WSAGetLastError());
+            return false;
+        }
         int r = recv(fd, reinterpret_cast<char *>(buf + got),
                      static_cast<int>(n - got), 0);
         if (r <= 0) {
-            // libusbmuxd on Windows can return a non-blocking socket. WSAEWOULDBLOCK
-            // is not a disconnect; wait for the iPhone's next encoded frame.
-            if (r == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
-                fd_set readable{};
-                FD_SET(fd, &readable);
-                timeval timeout{};
-                timeout.tv_sec = 5;
-                const int ready = select(0, &readable, nullptr, nullptr, &timeout);
-                if (ready > 0) continue;
-                if (ready == 0) {
-                    fprintf(stderr, "WARN: timed out waiting for %s\n", part);
-                } else {
-                    fprintf(stderr, "ERROR: select %s failed: WSA=%d\n", part, WSAGetLastError());
-                }
-                return false;
+            // libusbmuxd may expose a non-blocking socket. That condition is
+            // not a disconnect: wait again until this logical read's deadline.
+            const int socketError = WSAGetLastError();
+            if (r == SOCKET_ERROR && socketError == WSAEWOULDBLOCK) {
+                continue;
             }
             if (r == 0) {
                 fprintf(stderr, "ERROR: iPhone closed connection while reading %s (%zu/%zu bytes)\n", part, got, n);
             } else {
-                fprintf(stderr, "ERROR: recv %s failed: WSA=%d\n", part, WSAGetLastError());
+                fprintf(stderr, "ERROR: recv %s failed: WSA=%d\n", part, socketError);
             }
             return false;
         }
