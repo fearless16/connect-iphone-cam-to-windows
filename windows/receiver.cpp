@@ -196,7 +196,14 @@ static SOCKET connect_tcp(const char* host) {
     for (addrinfo* item = results; item; item = item->ai_next) {
         SOCKET candidate = ::socket(item->ai_family, item->ai_socktype, item->ai_protocol);
         if (candidate == INVALID_SOCKET) continue;
-        if (item->ai_family != AF_INET || !bind_iphone_usb_interface(candidate, host)) {
+        // A local USB forwarder (for example go-ios) listens on loopback and
+        // already owns the Apple-device leg. Do not bind that connection to
+        // the Personal Hotspot adapter; doing so makes localhost forwarding
+        // impossible and unnecessarily couples the fallback to tethering.
+        const bool loopbackForward = item->ai_family == AF_INET &&
+            ntohl(reinterpret_cast<const sockaddr_in*>(item->ai_addr)->sin_addr.s_addr) == INADDR_LOOPBACK;
+        if (!loopbackForward &&
+            (item->ai_family != AF_INET || !bind_iphone_usb_interface(candidate, host))) {
             closesocket(candidate);
             continue;
         }
