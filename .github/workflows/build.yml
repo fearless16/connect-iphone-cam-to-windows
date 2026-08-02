@@ -109,7 +109,11 @@ jobs:
           path: windows-binaries/
 
   # ---------------------------------------------------------------------------
+  # Deprecated: Media Foundation virtual cameras activate in the Windows Frame
+  # Server service session, while the receiver is an interactive-session GPU
+  # process. Do not publish this nonfunctional artifact; OBS uses --obs-udp.
   windows-virtual-camera:
+    if: ${{ false }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
