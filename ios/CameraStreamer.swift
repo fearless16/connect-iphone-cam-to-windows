@@ -218,7 +218,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             compressionSessionOut: &sessionOut)
 
         guard status == noErr, let enc = sessionOut else {
+            setEncoderSetupFailed(true)
             report("HEVC encoder failed: \(status)")
+            scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
         }
         let propertyStatuses: [(String, OSStatus)] = [
@@ -233,6 +235,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             VTCompressionSessionInvalidate(enc)
             setEncoderSetupFailed(true)
             report("HEVC encoder setting failed (\(failed.0)): \(failed.1)")
+            scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
         }
 
@@ -241,6 +244,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             VTCompressionSessionInvalidate(enc)
             setEncoderSetupFailed(true)
             report("HEVC encoder prepare failed: \(prepareStatus)")
+            scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
         }
         encoderStateLock.lock()

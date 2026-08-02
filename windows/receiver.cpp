@@ -49,15 +49,15 @@ static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* f
     return formats[0];
 }
 
-static int connect_tcp(const char* host) {
+static SOCKET connect_tcp(const char* host) {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     char port[6]{};
     std::snprintf(port, sizeof(port), "%u", DEVICE_PORT);
     addrinfo* results = nullptr;
-    if (getaddrinfo(host, port, &hints, &results) != 0) return -1;
-    int socket = -1;
+    if (getaddrinfo(host, port, &hints, &results) != 0) return INVALID_SOCKET;
+    SOCKET socket = INVALID_SOCKET;
     for (addrinfo* item = results; item; item = item->ai_next) {
         SOCKET candidate = ::socket(item->ai_family, item->ai_socktype, item->ai_protocol);
         if (candidate == INVALID_SOCKET) continue;
@@ -67,13 +67,13 @@ static int connect_tcp(const char* host) {
         setsockopt(candidate, SOL_SOCKET, SO_SNDTIMEO,
                    reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
         if (::connect(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0) {
-            socket = static_cast<int>(candidate);
+            socket = candidate;
             break;
         }
         closesocket(candidate);
     }
     freeaddrinfo(results);
-    if (socket >= 0) printf("INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
+    if (socket != INVALID_SOCKET) printf("INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
     return socket;
 }
 
@@ -105,12 +105,12 @@ static std::string discover_iphone_usb_host() {
     return {};
 }
 
-static int connect_to_device(const char* usbNetworkHost) {
+static SOCKET connect_to_device(const char* usbNetworkHost) {
     // Personal Hotspot over USB creates a normal high-bandwidth Ethernet link.
     // This is the supported Windows transport and works with the Apple Devices
     // app; it does not depend on the incomplete Windows usbmuxd implementation.
-    const int tcpSocket = connect_tcp(usbNetworkHost);
-    if (tcpSocket >= 0) return tcpSocket;
+    const SOCKET tcpSocket = connect_tcp(usbNetworkHost);
+    if (tcpSocket != INVALID_SOCKET) return tcpSocket;
 
     // Older Apple Mobile Device Support installations can still use the
     // libusbmuxd implementation. It is intentionally only a fallback.
@@ -118,7 +118,7 @@ static int connect_to_device(const char* usbNetworkHost) {
     int count = usbmuxd_get_device_list(&list);
     if (count <= 0) {
         fprintf(stderr, "ERROR: no usbmuxd devices (is iTunes/AppleMobileDevice installed?)\n");
-        return -1;
+        return INVALID_SOCKET;
     }
     const int device_handle = static_cast<int>(list[0].handle);
     printf("INFO: device_handle=%d udid=%s\n", device_handle, list[0].udid);
@@ -126,14 +126,16 @@ static int connect_to_device(const char* usbNetworkHost) {
     usbmuxd_device_list_free(&list);
     if (fd < 0) {
         fprintf(stderr, "ERROR: usbmuxd_connect failed (phone app must be listening)\n");
-        return -1;
+        return INVALID_SOCKET;
     }
     printf("INFO: connected fd=%d\n", fd);
-    return fd;
+    // libusbmuxd exposes a legacy int descriptor. Preserve the full-width
+    // SOCKET type for all Winsock calls after this compatibility boundary.
+    return static_cast<SOCKET>(fd);
 }
 
 // Naive blocking read-until-full.
-static bool read_exact(int fd, uint8_t *buf, size_t n, const char *part) {
+static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part) {
     size_t got = 0;
     while (got < n) {
         int r = recv(fd, reinterpret_cast<char *>(buf + got),
@@ -143,7 +145,7 @@ static bool read_exact(int fd, uint8_t *buf, size_t n, const char *part) {
             // is not a disconnect; wait for the iPhone's next encoded frame.
             if (r == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
                 fd_set readable{};
-                FD_SET(static_cast<SOCKET>(fd), &readable);
+                FD_SET(fd, &readable);
                 timeval timeout{};
                 timeout.tv_sec = 5;
                 const int ready = select(0, &readable, nullptr, nullptr, &timeout);
@@ -253,7 +255,7 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
     }
 }
 
-static void receive_session(int fd) {
+static void receive_session(SOCKET fd) {
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     DecodeTelemetry decodeTelemetry{};
@@ -396,8 +398,8 @@ int main(int argc, char** argv) {
     printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
            usbNetworkHost.c_str(), DEVICE_PORT);
     for (;;) {
-        const int fd = connect_to_device(usbNetworkHost.c_str());
-        if (fd >= 0) {
+        const SOCKET fd = connect_to_device(usbNetworkHost.c_str());
+        if (fd != INVALID_SOCKET) {
             receive_session(fd);
             closesocket(fd);
             fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
