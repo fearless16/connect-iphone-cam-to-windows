@@ -20,6 +20,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var forceNextKeyFrame = false
     private var isConfigured = false
     private var stopped = false
+    // iOS forbids camera capture while the app is backgrounded. Recovery is
+    // resumed only after the app returns to the active foreground state.
+    // Accessed only on sessionQueue.
+    private var appIsActive = true
     // Accessed only on sessionQueue. Camera/VideoToolbox recovery is
     // deliberately serialized so a foreground notification, an interruption,
     // and an encode failure cannot rebuild the session concurrently.
@@ -62,6 +66,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                queue: .main) { [weak self] _ in
                 self?.resumeAfterForeground()
             },
+            center.addObserver(forName: UIApplication.willResignActiveNotification,
+                               object: nil,
+                               queue: .main) { [weak self] _ in
+                self?.pauseRecoveryForBackground()
+            },
             center.addObserver(forName: .AVCaptureSessionWasInterrupted,
                                object: session,
                                queue: .main) { [weak self] _ in
@@ -76,6 +85,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                                object: session,
                                queue: .main) { [weak self] notification in
                 self?.handleSessionRuntimeError(notification)
+            },
+            center.addObserver(forName: .AVCaptureSessionDidStopRunning,
+                               object: session,
+                               queue: .main) { [weak self] _ in
+                self?.handleSessionStopped()
             },
             center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification,
                                object: ProcessInfo.processInfo,
@@ -628,8 +642,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func resumeAfterForeground() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            self.appIsActive = true
             self.recoveryAttempt = 0
             self.recoverSession(reason: "Camera resumed • waiting for encoder")
+        }
+    }
+
+    private func pauseRecoveryForBackground() {
+        sessionQueue.async { [weak self] in
+            self?.appIsActive = false
         }
     }
 
@@ -648,6 +669,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             if error?.code == .mediaServicesWereReset || !self.session.isRunning {
                 self.scheduleRecoveryOnSessionQueue(reason: "Camera runtime reset")
             }
+        }
+    }
+
+    private func handleSessionStopped() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.stopped else { return }
+            self.invalidateEncoder(reason: "Camera stopped unexpectedly")
+            self.scheduleRecoveryOnSessionQueue(reason: "Camera stop recovery")
         }
     }
 
@@ -707,7 +736,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func recoverSession(reason: String) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
-        guard isConfigured, !stopped, let device = videoDevice else { return }
+        guard appIsActive, isConfigured, !stopped, let device = videoDevice else { return }
         session.beginConfiguration()
         let configured = apply4K60Format(to: device)
         session.commitConfiguration()
@@ -736,7 +765,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func scheduleRecoveryOnSessionQueue(reason: String) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
-        guard isConfigured, !stopped, !recoveryScheduled else { return }
+        guard appIsActive, isConfigured, !stopped, !recoveryScheduled else { return }
         recoveryScheduled = true
         let delay = min(8.0, 0.25 * pow(2.0, Double(recoveryAttempt)))
         recoveryAttempt = min(recoveryAttempt + 1, 5)
@@ -744,7 +773,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sessionQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.recoveryScheduled = false
-            guard self.isConfigured, !self.stopped else { return }
+            guard self.appIsActive, self.isConfigured, !self.stopped else { return }
             self.recoverSession(reason: "\(reason) recovered")
         }
     }
