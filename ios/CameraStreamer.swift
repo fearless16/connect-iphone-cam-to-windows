@@ -751,7 +751,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
         refreshActiveFormatTelemetry(device)
-        sender.start()
+        sender.restartListening(reason: "USB listener rebound after camera recovery")
         requestKeyFrame()
         recoveryAttempt = 0
         report(reason)

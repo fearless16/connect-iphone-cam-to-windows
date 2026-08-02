@@ -26,6 +26,22 @@ final class StreamSender {
     private var sentFrameStart = ProcessInfo.processInfo.systemUptime
     private var desiredRunning = false
     private var listenerRetryAttempt = 0
+    // USB tethering can disappear and come back without changing the app
+    // lifecycle. Recreate the listener whenever its wired path changes so a
+    // previously-ready listener is never left bound to the old interface.
+    private let pathMonitor = NWPathMonitor()
+    private var wiredPathSignature: String?
+
+    init() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            self?.handlePathUpdate(path)
+        }
+        pathMonitor.start(queue: queue)
+    }
+
+    deinit {
+        pathMonitor.cancel()
+    }
 
     func start() {
         queue.async { [weak self] in
@@ -33,6 +49,46 @@ final class StreamSender {
             self.desiredRunning = true
             self.startOnQueue()
         }
+    }
+
+    /// Rebind after foreground recovery or a USB interface transition. Calling
+    /// `start()` alone is intentionally idempotent and cannot repair a
+    /// listener that Network.framework still considers ready on a stale path.
+    func restartListening(reason: String) {
+        queue.async { [weak self] in
+            guard let self, self.desiredRunning else { return }
+            self.connection?.cancel()
+            self.connection = nil
+            self.connectionReady = false
+            self.sendInFlight = false
+            self.pendingPackets.removeAll(keepingCapacity: true)
+            let oldListener = self.listener
+            self.listener = nil
+            oldListener?.cancel()
+            self.listenerRetryAttempt = 0
+            self.report(reason)
+            self.startOnQueue()
+        }
+    }
+
+    private func handlePathUpdate(_ path: NWPath) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let wiredInterfaces = path.availableInterfaces
+            .filter { $0.type == .wiredEthernet }
+            .map(\.name)
+            .sorted()
+            .joined(separator: ",")
+        let status: String
+        switch path.status {
+        case .satisfied: status = "satisfied"
+        case .unsatisfied: status = "unsatisfied"
+        case .requiresConnection: status = "requiresConnection"
+        @unknown default: status = "unknown"
+        }
+        let signature = "\(status):\(wiredInterfaces)"
+        defer { wiredPathSignature = signature }
+        guard let previous = wiredPathSignature, previous != signature, desiredRunning else { return }
+        restartListening(reason: "USB network path changed • rebinding listener")
     }
 
     private func startOnQueue() {
