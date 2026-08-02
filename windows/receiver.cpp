@@ -464,15 +464,20 @@ int main(int argc, char** argv) {
     // Keep running across app restarts, lock/unlock recovery, and USB reconnects.
     // A double-clicked receiver must wait for the iPhone instead of flashing away.
     const char* environmentHost = std::getenv("IPHONE_CAMERA_HOST");
-    bool obsUdpRelay = false;
+    // OBS relay is the production path.  Make it the double-click/default
+    // behavior so users do not have to remember a command-line switch.
+    bool obsUdpRelay = true;
     const char* explicitHost = nullptr;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--obs-udp") == 0) {
             obsUdpRelay = true;
+        } else if (std::strcmp(argv[index], "--gpu-ring") == 0) {
+            // Retain the old diagnostic publisher only for development.
+            obsUdpRelay = false;
         } else if (!explicitHost) {
             explicitHost = argv[index];
         } else {
-            fprintf(stderr, "Usage: receiver.exe [--obs-udp] [iPhone USB host]\n");
+            fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [iPhone USB host]\n");
             return 2;
         }
     }

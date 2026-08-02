@@ -6,7 +6,8 @@ decode on the selected GPU. It does not use the Windows Camera Frame Server,
 `regsvr32`, or the deprecated virtual-camera artifact.
 
 1. Start the iPhone app and leave it open in the foreground.
-2. Run `receiver.exe --obs-udp`.
+2. Double-click `receiver.exe` (OBS relay is the default). Use
+   `receiver.exe --gpu-ring` only for developer diagnostics.
 3. In OBS, add **Media Source**, uncheck **Local File**, and set **Input** to
    `udp://127.0.0.1:12346`.
 4. Set **Input Format** to `mpegts` and enable **Use hardware decoding when
