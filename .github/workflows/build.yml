@@ -96,7 +96,7 @@ jobs:
             "${{ github.workspace }}/windows/receiver.cpp" \
             "${{ github.workspace }}/windows/gpu_frame_publisher.cpp" \
             -o receiver.exe \
-            $(pkg-config --libs libavcodec libavutil libswscale) \
+            $(pkg-config --libs libavcodec libavformat libavutil libswscale) \
             $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ld3d11 -ldxgi -lmfplat -ladvapi32
           ls -lh receiver.exe
           mkdir -p windows-binaries

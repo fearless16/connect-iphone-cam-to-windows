@@ -23,6 +23,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
@@ -39,6 +40,70 @@ struct DecodeTelemetry {
     uint64_t d3d11_frames = 0;
     uint64_t software_frames = 0;
     uint64_t gpu_backpressure_drops = 0;
+};
+
+// OBS Media Source officially accepts MPEG-TS over UDP.  This relay keeps
+// iPhone HEVC compressed until it reaches OBS; no frame is mapped or copied on
+// the CPU.  OBS owns the hardware decode on the selected Radeon adapter.
+class ObsUdpRelay final {
+public:
+    static constexpr const char* kUrl = "udp://127.0.0.1:12346?pkt_size=1316";
+
+    ~ObsUdpRelay() { Close(); }
+
+    bool Open() {
+        int status = avformat_alloc_output_context2(&context_, nullptr, "mpegts", kUrl);
+        if (status < 0 || !context_) return Report("avformat_alloc_output_context2", status);
+        stream_ = avformat_new_stream(context_, nullptr);
+        if (!stream_) return Report("avformat_new_stream", AVERROR(ENOMEM));
+        stream_->time_base = AVRational{1, 1'000'000};
+        stream_->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+        stream_->codecpar->codec_id = AV_CODEC_ID_HEVC;
+        stream_->codecpar->width = 3840;
+        stream_->codecpar->height = 2160;
+        status = avio_open(&context_->pb, kUrl, AVIO_FLAG_WRITE);
+        if (status < 0) return Report("avio_open", status);
+        status = avformat_write_header(context_, nullptr);
+        if (status < 0) return Report("avformat_write_header", status);
+        printf("INFO: OBS relay ready; Media Source input=%s format=mpegts\\n", kUrl);
+        return true;
+    }
+
+    bool Write(const AVPacket& packet, uint64_t timestampUs, bool isKeyframe) {
+        if (!context_ || !stream_) return false;
+        AVPacket output{};
+        output.data = packet.data;
+        output.size = packet.size;
+        output.stream_index = stream_->index;
+        output.pts = static_cast<int64_t>(timestampUs);
+        output.dts = output.pts;
+        output.duration = 16'667;
+        if (isKeyframe) output.flags |= AV_PKT_FLAG_KEY;
+        const int status = av_interleaved_write_frame(context_, &output);
+        return status >= 0 || Report("av_interleaved_write_frame", status);
+    }
+
+private:
+    bool Report(const char* operation, int status) {
+        char text[AV_ERROR_MAX_STRING_SIZE]{};
+        av_strerror(status, text, sizeof(text));
+        fprintf(stderr, "ERROR: OBS relay %s failed: %s (%d)\\n", operation, text, status);
+        return false;
+    }
+
+    void Close() noexcept {
+        if (!context_) return;
+        if (context_->pb) {
+            av_write_trailer(context_);
+            avio_closep(&context_->pb);
+        }
+        avformat_free_context(context_);
+        context_ = nullptr;
+        stream_ = nullptr;
+    }
+
+    AVFormatContext* context_ = nullptr;
+    AVStream* stream_ = nullptr;
 };
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
@@ -255,12 +320,14 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
     }
 }
 
-static void receive_session(SOCKET fd) {
+static void receive_session(SOCKET fd, bool obsUdpRelay) {
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     DecodeTelemetry decodeTelemetry{};
     GpuFramePublisher gpuPublisher{};
-    AVCodecContext *dec = init_decoder(decodeTelemetry);
+    AVCodecContext *dec = obsUdpRelay ? nullptr : init_decoder(decodeTelemetry);
+    ObsUdpRelay relay;
+    if (obsUdpRelay && !relay.Open()) return;
     AVPacket *packet = av_packet_alloc();
     AVFrame *decodedFrame = av_frame_alloc();
     if (!packet || !decodedFrame) {
@@ -337,7 +404,13 @@ static void receive_session(SOCKET fd) {
         if (out) fwrite(packet->data, 1, h.frame_size, out);
         frames++;
 
-        // Step 7: decode with FFmpeg and count.
+        if (obsUdpRelay && !relay.Write(*packet, h.timestamp_us,
+                                        contains_hevc_idr(packet->data, h.frame_size))) {
+            av_packet_unref(packet);
+            break;
+        }
+
+        // Default mode decodes with FFmpeg/D3D11VA for the GPU frame publisher.
         if (dec) {
             int status = avcodec_send_packet(dec, packet);
             if (status == AVERROR(EAGAIN)) {
@@ -362,13 +435,14 @@ static void receive_session(SOCKET fd) {
                 ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
             const double sourceFps = sourceSeconds > 0
                 ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
-            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu frames\n",
+            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu mode=%s frames\n",
                    frames / s, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
                    static_cast<unsigned long long>(decoded),
                    static_cast<unsigned long long>(decodeTelemetry.d3d11_frames),
                    static_cast<unsigned long long>(decodeTelemetry.software_frames),
-                   static_cast<unsigned long long>(decodeTelemetry.gpu_backpressure_drops));
+                   static_cast<unsigned long long>(decodeTelemetry.gpu_backpressure_drops),
+                   obsUdpRelay ? "OBS_UDP_HEVC" : "GPU_RING");
         }
     }
 
@@ -390,17 +464,30 @@ int main(int argc, char** argv) {
     // Keep running across app restarts, lock/unlock recovery, and USB reconnects.
     // A double-clicked receiver must wait for the iPhone instead of flashing away.
     const char* environmentHost = std::getenv("IPHONE_CAMERA_HOST");
+    bool obsUdpRelay = false;
+    const char* explicitHost = nullptr;
+    for (int index = 1; index < argc; ++index) {
+        if (std::strcmp(argv[index], "--obs-udp") == 0) {
+            obsUdpRelay = true;
+        } else if (!explicitHost) {
+            explicitHost = argv[index];
+        } else {
+            fprintf(stderr, "Usage: receiver.exe [--obs-udp] [iPhone USB host]\n");
+            return 2;
+        }
+    }
     const std::string discoveredHost = discover_iphone_usb_host();
-    const std::string usbNetworkHost = argc > 1 ? argv[1] :
+    const std::string usbNetworkHost = explicitHost ? explicitHost :
         (environmentHost && *environmentHost ? environmentHost :
          (discoveredHost.empty() ? "172.20.10.1" : discoveredHost));
-    printf("INFO: iPhone Camera USB receiver build=GPU_RING_DIAGNOSTICS_V2\n");
+    printf("INFO: iPhone Camera USB receiver build=%s\n",
+           obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
     printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
            usbNetworkHost.c_str(), DEVICE_PORT);
     for (;;) {
         const SOCKET fd = connect_to_device(usbNetworkHost.c_str());
         if (fd != INVALID_SOCKET) {
-            receive_session(fd);
+            receive_session(fd, obsUdpRelay);
             closesocket(fd);
             fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
         } else {
