@@ -208,7 +208,10 @@ STDMETHODIMP MediaStream::RequestSample(IUnknown* pToken)
 STDMETHODIMP MediaStream::SetStreamState(MF_STREAM_STATE value)
 {
 	WINTRACE(L"MediaStream::SetStreamState current:%u value:%u", _state, value);
-	if (_state = value)
+	// A state request that is already satisfied is a no-op.  This must be a
+	// comparison: assigning MF_STREAM_STATE_RUNNING here skips Start(), leaving
+	// the Frame Server's sample allocator uninitialised.
+	if (_state == value)
 		return S_OK;
 	switch (value)
 	{

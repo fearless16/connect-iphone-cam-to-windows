@@ -134,6 +134,17 @@ jobs:
             exit $buildExitCode
           }
 
+      - name: Guard Frame Server stream-state handling
+        shell: pwsh
+        run: |
+          $source = Get-Content third_party/VCamSample/VCamSampleSource/MediaStream.cpp -Raw
+          if ($source -match 'if\s*\(\s*_state\s*=\s*value\s*\)') {
+            throw 'MediaStream::SetStreamState must compare state; assignment skips Start().'
+          }
+          if ($source -notmatch 'if\s*\(\s*_state\s*==\s*value\s*\)') {
+            throw 'MediaStream::SetStreamState no-op guard is missing.'
+          }
+
       - name: Build the virtual-camera registration controller (x64/MSVC)
         shell: pwsh
         run: |

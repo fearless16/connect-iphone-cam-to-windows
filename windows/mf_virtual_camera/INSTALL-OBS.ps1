@@ -18,9 +18,16 @@ if (-not (Test-Path -LiteralPath $dll) -or -not (Test-Path -LiteralPath $control
 }
 
 $systemRegsvr = Join-Path $env:WINDIR 'System32\regsvr32.exe'
+$sourceClsid = '{6A3939D4-C839-4CC3-A9C7-B0372E3680B3}'
+$sourceRegistration = "HKLM:\Software\Classes\CLSID\$sourceClsid\InprocServer32"
+function Test-SourceRegistration {
+    if (-not (Test-Path -LiteralPath $sourceRegistration)) { return $false }
+    return (Get-ItemProperty -LiteralPath $sourceRegistration).'(default)' -eq $dll
+}
+
 if ($Remove) {
     & $systemRegsvr /u $dll
-    if ($LASTEXITCODE -ne 0) { throw "regsvr32 unregister failed: $LASTEXITCODE" }
+    if (Test-SourceRegistration) { throw 'regsvr32 unregister did not remove the source COM registration.' }
     & $controller --remove
     if ($LASTEXITCODE -ne 0) { throw "virtual-camera removal failed: $LASTEXITCODE" }
     Write-Host 'iPhone Camera Stream removed.'
@@ -31,7 +38,9 @@ if ($Remove) {
 # COM source. The controller creates an AllUsers virtual camera in this same
 # elevation context so it is visible to the normal OBS user.
 & $systemRegsvr $dll
-if ($LASTEXITCODE -ne 0) { throw "regsvr32 registration failed: $LASTEXITCODE" }
+# regsvr32 can leave LASTEXITCODE unset for its GUI invocation in PowerShell 7.
+# Verify the machine-wide COM entry instead of treating an unset value as a failure.
+if (-not (Test-SourceRegistration)) { throw "regsvr32 did not create the source COM registration (exit: $LASTEXITCODE)." }
 & $controller
 if ($LASTEXITCODE -ne 0) { throw "virtual-camera registration failed: $LASTEXITCODE" }
 Write-Host 'Registered iPhone Camera Stream. Add it in OBS as a Video Capture Device.'
