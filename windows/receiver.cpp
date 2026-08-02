@@ -165,6 +165,25 @@ static bool bind_iphone_usb_interface(SOCKET socket, const char* host) {
     return false;
 }
 
+static constexpr long kConnectTimeoutMs = 2'000;
+
+static bool finish_nonblocking_connect(SOCKET socket) {
+    fd_set writable{};
+    fd_set exceptional{};
+    FD_SET(socket, &writable);
+    FD_SET(socket, &exceptional);
+    timeval timeout{};
+    timeout.tv_sec = kConnectTimeoutMs / 1'000;
+    timeout.tv_usec = (kConnectTimeoutMs % 1'000) * 1'000;
+    const int selected = select(0, nullptr, &writable, &exceptional, &timeout);
+    if (selected <= 0) return false;
+
+    int soError = 0;
+    int soErrorSize = sizeof(soError);
+    return getsockopt(socket, SOL_SOCKET, SO_ERROR,
+                      reinterpret_cast<char*>(&soError), &soErrorSize) == 0 && soError == 0;
+}
+
 static SOCKET connect_tcp(const char* host) {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -181,7 +200,22 @@ static SOCKET connect_tcp(const char* host) {
             closesocket(candidate);
             continue;
         }
-        if (::connect(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0) {
+        u_long nonBlocking = 1;
+        if (ioctlsocket(candidate, FIONBIO, &nonBlocking) != 0) {
+            closesocket(candidate);
+            continue;
+        }
+        const int connected = ::connect(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen));
+        const int connectError = connected == 0 ? 0 : WSAGetLastError();
+        const bool established = connected == 0 ||
+            ((connectError == WSAEWOULDBLOCK || connectError == WSAEINPROGRESS ||
+              connectError == WSAEALREADY) && finish_nonblocking_connect(candidate));
+        if (established) {
+            nonBlocking = 0;
+            if (ioctlsocket(candidate, FIONBIO, &nonBlocking) != 0) {
+                closesocket(candidate);
+                continue;
+            }
             socket = candidate;
             break;
         }
