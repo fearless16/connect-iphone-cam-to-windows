@@ -221,32 +221,39 @@ static std::string discover_iphone_usb_host() {
 }
 
 static SOCKET connect_to_device(const char* usbNetworkHost) {
-    // Personal Hotspot over USB creates a normal high-bandwidth Ethernet link.
-    // This is the supported Windows transport and works with the Apple Devices
-    // app; it does not depend on the incomplete Windows usbmuxd implementation.
+    // Native Apple Mobile Device Service/usbmux is the preferred USB path.
+    // It does not rely on iPhone Personal Hotspot exposing an inbound port.
+    usbmuxd_device_info_t *list = nullptr;
+    const int count = usbmuxd_get_device_list(&list);
+    const usbmuxd_device_info_t* usbDevice = nullptr;
+    for (int index = 0; index < count; ++index) {
+        if (list[index].conn_type == CONNECTION_TYPE_USB) {
+            usbDevice = &list[index];
+            break;
+        }
+    }
+    if (usbDevice != nullptr) {
+        const int device_handle = static_cast<int>(usbDevice->handle);
+        printf("INFO: device_handle=%d udid=%s\n", device_handle, usbDevice->udid);
+        int fd = usbmuxd_connect(device_handle, DEVICE_PORT);
+        if (list != nullptr) usbmuxd_device_list_free(&list);
+        if (fd >= 0) {
+            printf("INFO: connected fd=%d\n", fd);
+            // libusbmuxd exposes a legacy int descriptor. Preserve the full-width
+            // SOCKET type for all Winsock calls after this compatibility boundary.
+            return static_cast<SOCKET>(fd);
+        }
+        fprintf(stderr, "WARN: usbmuxd_connect failed; trying USB network fallback\n");
+    } else if (list != nullptr) {
+        usbmuxd_device_list_free(&list);
+    }
+
+    // Personal Hotspot over USB remains a useful fallback when AMDS has not
+    // enumerated the device yet.
     const SOCKET tcpSocket = connect_tcp(usbNetworkHost);
     if (tcpSocket != INVALID_SOCKET) return tcpSocket;
-
-    // Older Apple Mobile Device Support installations can still use the
-    // libusbmuxd implementation. It is intentionally only a fallback.
-    usbmuxd_device_info_t *list = nullptr;
-    int count = usbmuxd_get_device_list(&list);
-    if (count <= 0) {
-        fprintf(stderr, "ERROR: no usbmuxd devices (is iTunes/AppleMobileDevice installed?)\n");
-        return INVALID_SOCKET;
-    }
-    const int device_handle = static_cast<int>(list[0].handle);
-    printf("INFO: device_handle=%d udid=%s\n", device_handle, list[0].udid);
-    int fd = usbmuxd_connect(device_handle, DEVICE_PORT);
-    usbmuxd_device_list_free(&list);
-    if (fd < 0) {
-        fprintf(stderr, "ERROR: usbmuxd_connect failed (phone app must be listening)\n");
-        return INVALID_SOCKET;
-    }
-    printf("INFO: connected fd=%d\n", fd);
-    // libusbmuxd exposes a legacy int descriptor. Preserve the full-width
-    // SOCKET type for all Winsock calls after this compatibility boundary.
-    return static_cast<SOCKET>(fd);
+    fprintf(stderr, "ERROR: no iPhone USB transport available (AMDS/usbmux or USB network)\n");
+    return INVALID_SOCKET;
 }
 
 // Naive blocking read-until-full.
