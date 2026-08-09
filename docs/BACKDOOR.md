@@ -17,27 +17,30 @@ only **download + install**. This is the whole point of `.github/workflows/build
    (TrollStore installs unsigned apps permanently — no Mac, no PC, no Apple ID cert).
    - If you don't have TrollStore: use **Esign** / **Scarlet** (also phone-only sideloaders).
 5. **Download `windows-binaries`** and copy it to the Windows PC that runs OBS.
-   - Run `regsvr32 iphonecamera.ax` (Admin Command Prompt) if the `.ax` was built.
-   - Run `receiver.exe` to test the transport / measure FPS.
-   - Open OBS → Video Capture Device → **iPhone Camera**.
+   - Run `receiver.exe` to start the supported USB-to-OBS relay.
+   - In OBS, add a **Media Source** with input `udp://127.0.0.1:12346` and
+     input format `mpegts`.
 6. Plug the iPhone (app running) into the Windows PC via USB. Done.
 
 ## Why this works
 - A **macOS CI runner** compiles the Swift app and exports an **unsigned IPA**
   (`CODE_SIGNING_ALLOWED=NO`). TrollStore re-signs it locally on the device.
 - A **Windows CI runner** uses MSYS2, which ships **prebuilt ffmpeg + libusbmuxd**
-  dev packages — no manual `.lib` hunting. BaseClasses is cloned from Microsoft's
-  samples repo. `receiver.exe` always builds; `iphonecamera.ax` is best-effort
-  (it needs the DirectShow base classes, which sometimes needs a tweak on MinGW).
+  dev packages — no manual `.lib` hunting. `receiver.exe` is the supported
+  artifact and relays the stream to OBS over local UDP.
 
 ## Fallbacks if a step fails
-- **No `.ax` artifact:** the transport still works — run `receiver.exe` to confirm
-  frames arrive and measure FPS. The virtual camera `.ax` can be built later on any
-  full Visual Studio machine (see `docs/QUICKSTART.md`), or you can grab a prebuilt
-  DirectShow virtual-camera wrapper.
+- **No video in OBS:** confirm that `receiver.exe` is running and the OBS Media
+  Source input is `udp://127.0.0.1:12346` with format `mpegts`.
 - **IPA won't install:** your iOS version may be outside TrollStore's supported range.
   Use Esign/Scarlet, or temporarily use a friend's Mac to sign once.
 
 ## What you still need (can't be avoided)
 - A **Windows PC** running OBS (you operate it, you just don't compile on it).
 - The **iPhone app actually running** when you stream.
+
+## Legacy virtual camera
+
+The repository retains old virtual-camera sources for research only. They are
+disabled and unsupported; do not register or use them. The supported path is
+always `receiver.exe` plus the OBS UDP Media Source.

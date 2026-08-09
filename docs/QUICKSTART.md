@@ -25,12 +25,10 @@ The iPhone plugs into the **Windows PC** with a USB cable.
 
 ---
 
-## PART B — Windows: build and validate the transport
+## PART B — Windows: build and run the OBS relay
 
-`receiver.exe` is the supported validation tool at this stage. It connects over
-USB, validates the stream protocol, and decodes the HEVC feed. The
-`iphonecamera.ax` DirectShow filter is experimental and is **not** verified as an
-end-to-end 4K60 OBS camera path.
+`receiver.exe` is the supported single-PC path. It relays the iPhone's HEVC feed
+over local UDP to an OBS Media Source.
 
 1. Install **Visual Studio 2022** (Community is free) with the **"Desktop development with C++"** workload.
 2. Install **vcpkg** (one-time):
@@ -42,12 +40,10 @@ end-to-end 4K60 OBS camera path.
    ```
    C:\vcpkg\vcpkg install ffmpeg --triplet x64-windows
    ```
-4. Get **DirectShow BaseClasses** (`streams.h`):
-   - It ships with the Windows SDK samples. If missing, download the "DirectX 9.0 SDK" or grab `BaseClasses` from the Windows SDK. Note the folder that contains `streams.h`.
-5. Build **libusbmuxd** (`usbmuxd.lib`):
+4. Build **libusbmuxd** (`usbmuxd.lib`):
    - From https://github.com/libimobiledevice/libusbmuxd (cmake, x64-windows). Note its `include/` and `usbmuxd.lib`.
-6. Install **Apple Devices** from Microsoft Store (already installed on this PC).
-7. Configure & build this project:
+5. Install **Apple Devices** from Microsoft Store (already installed on this PC).
+6. Configure & build this project:
    ```
    cd windows
    cmake -B build -S . ^
@@ -56,33 +52,27 @@ end-to-end 4K60 OBS camera path.
      -DUSBMUXD_LIBRARY=C:\path\to\libusbmuxd\lib\usbmuxd.lib
    cmake --build build --config Release
    ```
-8. On iPhone: **Settings → Personal Hotspot → Allow Others to Join → On**.
+7. On iPhone: **Settings → Personal Hotspot → Allow Others to Join → On**.
    Keep the iPhone USB cable connected and tap **Trust** if requested. Apple
    Devices provides the Windows USB-network driver. This is still USB (not
    Wi-Fi), but it avoids the incomplete Windows `usbmuxd` implementation.
-9. Validate the USB transport before attempting OBS:
+8. In OBS, follow [OBS-SETUP.md](../OBS-SETUP.md) to add the Media Source.
+9. Start the receiver:
    ```
    cd windows\build\Release
    receiver.exe
    ```
-   Confirm it reports a stable receive/decode rate while the iPhone app is
+   Confirm `mode=OBS_UDP_HEVC` and a stable receive rate while the iPhone app is
    running. Perform the planned 30-minute soak test before treating 4K60 as
    reliable.
-9. Optional, experimental: register the virtual camera (run **Command Prompt as Administrator**):
-   ```
-   cd windows\build\Release
-   regsvr32 iphonecamera.ax
-   ```
-10. Optional, experimental: open **OBS** → Sources → **+ Video Capture Device**
-   → Device: **iPhone Camera**. This path has not been validated for 4K60.
 
 ---
 
 ## PART C — Run
 
 - Phone must be plugged into the Windows PC via USB and the app running (`STATUS: Camera Active` on the Mac console earlier; the app keeps running after unplug once launched).
-- Use `receiver.exe` to validate the USB transport. Do not treat the OBS camera
-  output as a verified 4K60 result yet; `iphonecamera.ax` remains experimental.
+- Start the OBS Media Source before `receiver.exe`; relay-write errors are
+  counted as `relayDrop` and do not end the iPhone connection.
 
 ---
 
@@ -94,13 +84,13 @@ end-to-end 4K60 OBS camera path.
 | App won't launch on phone | Trust developer: Settings → General → VPN & Device Management. |
 | Receiver keeps retrying | Turn on iPhone Personal Hotspot, keep USB connected, and leave the camera app open. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
-| OBS: no "iPhone Camera" device | `regsvr32 iphonecamera.ax` failed (run cmd as Admin) or missing VC++/runtime. |
+| OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
 | Black frame in OBS | Transport not yet flowing; check the receiver console / phone is streaming. |
 
 ---
 
 ## What is deliberately NOT built yet (per plan)
 
-Audio, settings, installer, segmentation/blur, and a production DirectShow camera
-path. We stabilize **4K60 over USB with `receiver.exe`** first. Background blur
-comes last, only after a clean 30-minute stream.
+Audio, settings, installer, and segmentation/blur. We stabilize **4K60 over USB
+with `receiver.exe` and OBS** first. Background blur comes last, only after a
+clean 30-minute stream.

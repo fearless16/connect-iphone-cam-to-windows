@@ -29,7 +29,20 @@ grep -q 'handleSessionStopped' "$source"
 grep -q 'sender.restartListening' "$source"
 grep -q 'Encoder recovery' "$source"
 grep -q 'HEVC encoder setup recovery' "$source"
+grep -q 'automaticallyAdjustsVideoHDREnabled = false' "$source"
+grep -q 'isVideoHDREnabled = false' "$source"
+grep -q 'let matching4K60Formats = device.formats.filter' "$source"
+grep -q 'matching4K60Formats.first(where:' "$source"
 grep -q 'kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange' "$source"
+auto_hdr_line=$(grep -n 'automaticallyAdjustsVideoHDREnabled = false' "$source" | head -n1 | cut -d: -f1)
+format_line=$(grep -n 'device.activeFormat = format' "$source" | head -n1 | cut -d: -f1)
+hdr_line=$(grep -n 'device.isVideoHDREnabled = false' "$source" | head -n1 | cut -d: -f1)
+[ "$auto_hdr_line" -lt "$format_line" ]
+[ "$format_line" -lt "$hdr_line" ]
+grep -q 'AverageBitRate, value: NSNumber(value: 40_000_000)' "$source"
+grep -q '\[NSNumber(value: 10_000_000), NSNumber(value: 1)\] as CFArray' "$source"
+grep -q 'DataRateLimits, value: rateLimit' "$source"
+grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 120)' "$source"
 grep -q 'setIdleTimerDisabled(true)' "$source"
 grep -q 'setIdleTimerDisabled(false)' "$source"
 grep -q 'isIdleTimerDisabled' "$source"

@@ -26,6 +26,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/error.h>
 #include <libavutil/avutil.h>
+#include <libavutil/dict.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
@@ -56,54 +57,87 @@ public:
         if (status < 0 || !context_) return Report("avformat_alloc_output_context2", status);
         stream_ = avformat_new_stream(context_, nullptr);
         if (!stream_) return Report("avformat_new_stream", AVERROR(ENOMEM));
-        stream_->time_base = AVRational{1, 1'000'000};
         stream_->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
         stream_->codecpar->codec_id = AV_CODEC_ID_HEVC;
         stream_->codecpar->width = 3840;
         stream_->codecpar->height = 2160;
-        status = avio_open(&context_->pb, kUrl, AVIO_FLAG_WRITE);
-        if (status < 0) return Report("avio_open", status);
-        status = avformat_write_header(context_, nullptr);
+        stream_->avg_frame_rate = AVRational{60, 1};
+        AVDictionary* options = nullptr;
+        av_dict_set(&options, "pat_period", "0.1", 0);
+        av_dict_set(&options, "muxdelay", "0", 0);
+        av_dict_set(&options, "muxpreload", "0", 0);
+        av_dict_set(&options, "flush_packets", "1", 0);
+        status = avio_open2(&context_->pb, kUrl, AVIO_FLAG_WRITE, nullptr, nullptr);
+        if (status < 0) {
+            av_dict_free(&options);
+            return Report("avio_open2", status);
+        }
+        status = avformat_write_header(context_, &options);
+        av_dict_free(&options);
         if (status < 0) return Report("avformat_write_header", status);
-        printf("INFO: OBS relay ready; Media Source input=%s format=mpegts\\n", kUrl);
+        header_written_ = true;
+        muxer_time_base_ = stream_->time_base;
+        printf("INFO: OBS relay ready; Media Source input=%s format=mpegts tb=%d/%d\n",
+               kUrl, muxer_time_base_.num, muxer_time_base_.den);
         return true;
     }
 
-    bool Write(const AVPacket& packet, uint64_t timestampUs, bool isKeyframe) {
+    bool Write(const AVPacket& source, uint64_t timestampUs, bool isKeyframe) {
         if (!context_ || !stream_) return false;
-        AVPacket output{};
-        output.data = packet.data;
-        output.size = packet.size;
-        output.stream_index = stream_->index;
-        output.pts = static_cast<int64_t>(timestampUs);
-        output.dts = output.pts;
-        output.duration = 16'667;
-        if (isKeyframe) output.flags |= AV_PKT_FLAG_KEY;
-        const int status = av_interleaved_write_frame(context_, &output);
-        return status >= 0 || Report("av_interleaved_write_frame", status);
+        if (first_timestamp_us_ == UINT64_MAX) first_timestamp_us_ = timestampUs;
+        const int64_t relativeUs = static_cast<int64_t>(timestampUs - first_timestamp_us_);
+        AVPacket* packet = av_packet_alloc();
+        if (!packet || av_packet_ref(packet, &source) < 0) {
+            av_packet_free(&packet);
+            return false;
+        }
+        packet->stream_index = stream_->index;
+        packet->pts = av_rescale_q(relativeUs, AVRational{1, 1'000'000}, muxer_time_base_);
+        packet->dts = packet->pts;
+        packet->duration = av_rescale_q(16'667, AVRational{1, 1'000'000}, muxer_time_base_);
+        if (isKeyframe) packet->flags |= AV_PKT_FLAG_KEY;
+        const int status = av_interleaved_write_frame(context_, packet);
+        av_packet_free(&packet);
+        return status >= 0 || ReportWriteFailure(status);
     }
 
 private:
+    bool ReportWriteFailure(int status) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= next_write_error_log_) {
+            next_write_error_log_ = now + std::chrono::seconds(5);
+            return Report("av_interleaved_write_frame", status);
+        }
+        return false;
+    }
+
     bool Report(const char* operation, int status) {
         char text[AV_ERROR_MAX_STRING_SIZE]{};
         av_strerror(status, text, sizeof(text));
-        fprintf(stderr, "ERROR: OBS relay %s failed: %s (%d)\\n", operation, text, status);
+        fprintf(stderr, "ERROR: OBS relay %s failed: %s (%d)\n", operation, text, status);
         return false;
     }
 
     void Close() noexcept {
         if (!context_) return;
-        if (context_->pb) {
+        if (header_written_ && context_->pb) {
             av_write_trailer(context_);
+        }
+        if (context_->pb) {
             avio_closep(&context_->pb);
         }
         avformat_free_context(context_);
         context_ = nullptr;
         stream_ = nullptr;
+        header_written_ = false;
     }
 
     AVFormatContext* context_ = nullptr;
     AVStream* stream_ = nullptr;
+    bool header_written_ = false;
+    AVRational muxer_time_base_{1, 90'000};
+    uint64_t first_timestamp_us_ = UINT64_MAX;
+    std::chrono::steady_clock::time_point next_write_error_log_{};
 };
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
@@ -453,7 +487,7 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
 
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     uint64_t frames = 0, decoded = 0;
-    uint64_t skippedUntilRandomAccess = 0;
+    uint64_t skippedUntilRandomAccess = 0, relayWriteFailures = 0;
     bool waitingForRandomAccess = true;
     uint64_t firstTimestampUs = 0, previousTimestampUs = 0, sourceGapFrames = 0;
     auto t0 = std::chrono::steady_clock::now();
@@ -516,10 +550,11 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
         if (out) fwrite(packet->data, 1, h.frame_size, out);
         frames++;
 
-        if (obsUdpRelay && !relay.Write(*packet, h.timestamp_us,
-                                        contains_hevc_idr(packet->data, h.frame_size))) {
-            av_packet_unref(packet);
-            break;
+        if (obsUdpRelay) {
+            const bool isKeyframe = contains_hevc_idr(packet->data, h.frame_size);
+            if (!relay.Write(*packet, h.timestamp_us, isKeyframe)) {
+                ++relayWriteFailures;
+            }
         }
 
         // Default mode decodes with FFmpeg/D3D11VA for the GPU frame publisher.
@@ -547,9 +582,10 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
                 ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
             const double sourceFps = sourceSeconds > 0
                 ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
-            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu mode=%s frames\n",
+            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu mode=%s frames\n",
                    frames / s, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
+                   static_cast<unsigned long long>(relayWriteFailures),
                    static_cast<unsigned long long>(decoded),
                    static_cast<unsigned long long>(decodeTelemetry.d3d11_frames),
                    static_cast<unsigned long long>(decodeTelemetry.software_frames),

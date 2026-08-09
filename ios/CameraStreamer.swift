@@ -237,13 +237,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
         }
+        let rateLimit: CFArray = [NSNumber(value: 10_000_000), NSNumber(value: 1)] as CFArray
         let propertyStatuses: [(String, OSStatus)] = [
             ("real-time", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)),
             ("frame reordering", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)),
             ("HEVC profile", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)),
-            ("bitrate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 80_000_000))),
+            ("bitrate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 40_000_000))),
+            ("rate limit", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_DataRateLimits, value: rateLimit)),
             ("frame rate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 60))),
-            ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 60))),
+            ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 120))),
         ]
         if let failed = propertyStatuses.first(where: { $0.1 != noErr }) {
             VTCompressionSessionInvalidate(enc)
@@ -472,17 +474,27 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            guard let format = device.formats.first(where: { format in
+            let matching4K60Formats = device.formats.filter { format in
                 let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
                 return dimensions.width == 3840 && dimensions.height == 2160 &&
                     format.videoSupportedFrameRateRanges.contains(where: {
                         $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
                     })
-            }) else {
+            }
+            guard let format = matching4K60Formats.first(where: {
+                CMFormatDescriptionGetMediaSubType($0.formatDescription) ==
+                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            }) ?? matching4K60Formats.first else {
                 report("This iPhone does not support 4K at 60 fps")
                 return false
             }
+
+            // Disable automatic HDR before choosing the capture format, then
+            // explicitly keep HDR off on that chosen format. Prefer the native
+            // 8-bit 420v variant to avoid an HDR/10-bit conversion at 4K60.
+            device.automaticallyAdjustsVideoHDREnabled = false
             device.activeFormat = format
+            device.isVideoHDREnabled = false
             let duration = CMTime(value: 1, timescale: 60)
             device.activeVideoMinFrameDuration = duration
             device.activeVideoMaxFrameDuration = duration
