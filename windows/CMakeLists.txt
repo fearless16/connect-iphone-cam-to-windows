@@ -6,10 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(virtual_camera_contract_test ../tests/virtual_camera_contract_test.cpp)
-    target_include_directories(virtual_camera_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_test(NAME virtual_camera_contract_test COMMAND virtual_camera_contract_test)
-
     add_executable(relay_timestamp_clock_test ../tests/relay_timestamp_clock_test.cpp)
     target_include_directories(relay_timestamp_clock_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME relay_timestamp_clock_test COMMAND relay_timestamp_clock_test)

@@ -53,6 +53,16 @@ jobs:
           sh tests/stream_sender_source_contract.sh ios/StreamSender.swift
           sh tests/encoder_setup_source_contract.sh ios/CameraStreamer.swift
           sh tests/hevc_join_source_contract.sh ios/CameraStreamer.swift ios/StreamSender.swift
+          sh tests/camera_orientation_timestamp_contract.sh \
+            ios/CameraStreamer.swift \
+            ios/CameraViewController.swift \
+            ios/Assets.xcassets/AppIcon.appiconset \
+            ios/iPhoneCameraStream.xcodeproj/project.pbxproj \
+            windows/receiver.cpp
+          sh tests/camera_feedback_source_contract.sh \
+            ios/CameraStreamer.swift \
+            ios/StreamSender.swift \
+            ios/CameraViewController.swift
 
       - name: Package unsigned IPA (TrollStore-ready)
         run: |
@@ -80,6 +90,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Validate iPhone app icon
+        shell: pwsh
+        run: ./tests/app_icon_contract.ps1 -IconPath ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
+
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -93,8 +107,6 @@ jobs:
 
       - name: Build receiver.exe and portable contract tests
         run: |
-          sh "${{ github.workspace }}/tests/virtual_camera_source_contract.sh" \
-            "${{ github.workspace }}/windows/virtual_camera.cpp"
           sh "${{ github.workspace }}/tests/receiver_source_contract.sh" \
             "${{ github.workspace }}/windows/receiver.cpp"
           sh "${{ github.workspace }}/tests/windows_ci_contract.sh" \
@@ -104,11 +116,6 @@ jobs:
             "${{ github.workspace }}/tests/protocol_selftest.cpp" \
             -o protocol_selftest.exe
           ./protocol_selftest.exe
-          g++ -std=c++20 -O2 \
-            -I"${{ github.workspace }}/windows" \
-            "${{ github.workspace }}/tests/virtual_camera_contract_test.cpp" \
-            -o virtual_camera_contract_test.exe
-          ./virtual_camera_contract_test.exe
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/windows" \
             "${{ github.workspace }}/tests/relay_timestamp_clock_test.cpp" \
@@ -140,64 +147,3 @@ jobs:
         with:
           name: windows-binaries
           path: windows-binaries/
-
-  # ---------------------------------------------------------------------------
-  # Deprecated: Media Foundation virtual cameras activate in the Windows Frame
-  # Server service session, while the receiver is an interactive-session GPU
-  # process. Do not publish this nonfunctional artifact; OBS uses --obs-udp.
-  windows-virtual-camera:
-    if: ${{ false }}
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Restore the documented Media Foundation source dependencies
-        run: nuget restore third_party/VCamSample/VCamSample.sln
-
-      - name: Build the native Frame Server source DLL (x64/MSVC)
-        shell: pwsh
-        run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
-            -find 'MSBuild\**\Bin\amd64\MSBuild.exe' | Select-Object -First 1
-          if (-not $msbuild) { throw 'MSBuild x64 was not found on the hosted Windows runner.' }
-          $buildOutput = & $msbuild third_party/VCamSample/VCamSampleSource/VCamSampleSource.vcxproj `
-            /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 2>&1
-          $buildExitCode = $LASTEXITCODE
-          $buildOutput | ForEach-Object { Write-Host $_ }
-          if ($buildExitCode -ne 0) {
-            $tail = ($buildOutput | Select-Object -Last 20) -join ' | '
-            Write-Host "::error title=Virtual-camera MSVC build::$tail"
-            exit $buildExitCode
-          }
-
-      - name: Guard Frame Server stream-state handling
-        shell: pwsh
-        run: |
-          $source = Get-Content third_party/VCamSample/VCamSampleSource/MediaStream.cpp -Raw
-          if ($source -match 'if\s*\(\s*_state\s*=\s*value\s*\)') {
-            throw 'MediaStream::SetStreamState must compare state; assignment skips Start().'
-          }
-          if ($source -notmatch 'if\s*\(\s*_state\s*==\s*value\s*\)') {
-            throw 'MediaStream::SetStreamState no-op guard is missing.'
-          }
-
-      - name: Build the virtual-camera registration controller (x64/MSVC)
-        shell: pwsh
-        run: |
-          cmake -S windows/mf_virtual_camera -B build/mf-vcam -A x64 -DBUILD_TESTING=ON
-          cmake --build build/mf-vcam --config Release --parallel
-          ctest --test-dir build/mf-vcam -C Release --output-on-failure
-
-      - name: Package OBS virtual-camera files
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force windows-virtual-camera | Out-Null
-          Copy-Item third_party/VCamSample/VCamSampleSource/x64/Release/VCamSampleSource.dll windows-virtual-camera/IPhoneCameraStreamSource.dll
-          Copy-Item build/mf-vcam/Release/IPhoneCameraVcamController.exe windows-virtual-camera/
-          Copy-Item windows/mf_virtual_camera/INSTALL-OBS.ps1 windows-virtual-camera/
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-virtual-camera
-          path: windows-virtual-camera/
