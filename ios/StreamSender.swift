@@ -1,6 +1,14 @@
 import Foundation
 import Network
 
+enum StreamSenderConnectionState: Equatable {
+    case waiting
+    case connected
+    case sending
+    case disconnected
+    case failed
+}
+
 /// Step 5: listen on a TCP port. usbmuxd tunnels it over USB automatically,
 /// so the Windows receiver connects via usbmuxd_connect(device_id, PORT).
 final class StreamSender {
@@ -13,6 +21,8 @@ final class StreamSender {
     var onStatus: ((String) -> Void)?
     var onClientConnected: (() -> Void)?
     var onFrameRate: ((Double, UInt64) -> Void)?
+    var onFrameSent: ((TimeInterval) -> Void)?
+    var onConnectionState: ((StreamSenderConnectionState) -> Void)?
     // Keep the queue short to bound latency, but allow enough packets to absorb
     // Network.framework completion jitter. A one-packet gate measured ~30 fps
     // even when the camera was producing native 4K60.
@@ -47,6 +57,7 @@ final class StreamSender {
         queue.async { [weak self] in
             guard let self else { return }
             self.desiredRunning = true
+            self.publishConnectionState(.waiting)
             self.startOnQueue()
         }
     }
@@ -66,6 +77,7 @@ final class StreamSender {
             self.listener = nil
             oldListener?.cancel()
             self.listenerRetryAttempt = 0
+            self.publishConnectionState(.waiting)
             self.report(reason)
             self.startOnQueue()
         }
@@ -100,6 +112,7 @@ final class StreamSender {
             newListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
         } catch {
             print("ERROR: NWListener \(error)")
+            publishConnectionState(.failed)
             scheduleRestart()
             return
         }
@@ -110,11 +123,14 @@ final class StreamSender {
             case .ready:
                 guard self.listener === newListener else { return }
                 self.listenerRetryAttempt = 0
+                self.publishConnectionState(.waiting)
                 self.report("USB stream service ready")
             case .waiting(let error):
+                self.publishConnectionState(.waiting)
                 self.report("USB listener waiting: \(error.localizedDescription)")
             case .failed(let error):
                 guard self.listener === newListener else { return }
+                self.publishConnectionState(.failed)
                 self.report("USB listener failed: \(error.localizedDescription)")
                 self.connection?.cancel()
                 self.connection = nil
@@ -127,6 +143,7 @@ final class StreamSender {
             case .cancelled:
                 guard self.listener === newListener else { return }
                 self.listener = nil
+                self.publishConnectionState(self.desiredRunning ? .waiting : .disconnected)
                 self.report("USB listener stopped")
                 self.scheduleRestart()
             default:
@@ -141,6 +158,7 @@ final class StreamSender {
             self.sendInFlight = false
             self.pendingPackets.removeAll(keepingCapacity: true)
             self.waitingForKeyFrame = true
+            self.publishConnectionState(.waiting)
             self.sentFrameCount = 0
             self.droppedFrameCount = 0
             self.sentFrameStart = ProcessInfo.processInfo.systemUptime
@@ -151,21 +169,25 @@ final class StreamSender {
                     case .ready:
                         self.connectionReady = true
                         self.waitingForKeyFrame = true
+                        self.publishConnectionState(.connected)
                         self.onClientConnected?()
                         self.report("PC connected • starting video")
                     case .waiting(let error):
+                        self.publishConnectionState(.waiting)
                         self.report("PC connection waiting: \(error.localizedDescription)")
                     case .failed(let error):
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
                         self.pendingPackets.removeAll(keepingCapacity: true)
+                        self.publishConnectionState(.failed)
                         self.report("PC connection failed: \(error.localizedDescription)")
                     case .cancelled:
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
                         self.pendingPackets.removeAll(keepingCapacity: true)
+                        self.publishConnectionState(.disconnected)
                         self.report("PC connection closed")
                     default:
                         break
@@ -232,6 +254,7 @@ final class StreamSender {
             self?.pendingPackets.removeAll(keepingCapacity: true)
             self?.listener?.cancel()
             self?.listener = nil
+            self?.publishConnectionState(.disconnected)
         }
     }
 
@@ -240,6 +263,11 @@ final class StreamSender {
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
         }
+    }
+
+    private func publishConnectionState(_ state: StreamSenderConnectionState) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        onConnectionState?(state)
     }
 
     private func pumpSend(connection: NWConnection) {
@@ -255,12 +283,19 @@ final class StreamSender {
                     self.connectionReady = false
                     self.connection = nil
                     self.pendingPackets.removeAll(keepingCapacity: true)
+                    self.publishConnectionState(.failed)
                     connection.cancel()
                     return
                 }
                 self.sentFrameCount &+= 1
+                let sentAt = ProcessInfo.processInfo.systemUptime
                 if self.sentFrameCount == 1 {
+                    self.publishConnectionState(.sending)
+                    self.onFrameSent?(sentAt)
                     self.report("First video frame sent")
+                }
+                if self.sentFrameCount % 30 == 0 {
+                    self.onFrameSent?(sentAt)
                 }
                 if self.sentFrameCount % 60 == 0 {
                     let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - self.sentFrameStart)

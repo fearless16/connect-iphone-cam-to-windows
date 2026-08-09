@@ -7,7 +7,9 @@ final class CameraViewController: UIViewController {
     private let previewLayer: AVCaptureVideoPreviewLayer
     private let statusLabel = UILabel()
     private let diagnosticsLabel = UILabel()
+    private let orientationControl = UISegmentedControl(items: ["Landscape", "Portrait"])
     private var didStart = false
+    private var confirmedOutputOrientation: OutputOrientation = .landscape
 
     init(streamer: CameraStreamer) {
         self.streamer = streamer
@@ -45,7 +47,19 @@ final class CameraViewController: UIViewController {
         diagnosticsLabel.clipsToBounds = true
         diagnosticsLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(diagnosticsLabel)
+
+        orientationControl.selectedSegmentIndex = 0
+        orientationControl.selectedSegmentTintColor = .systemBlue
+        orientationControl.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        orientationControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .normal)
+        orientationControl.translatesAutoresizingMaskIntoConstraints = false
+        orientationControl.addTarget(self, action: #selector(outputOrientationChanged), for: .valueChanged)
+        view.addSubview(orientationControl)
         NSLayoutConstraint.activate([
+            orientationControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            orientationControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            orientationControl.widthAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.widthAnchor,
+                                                       constant: -32),
             statusLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
             statusLabel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             statusLabel.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
@@ -56,12 +70,18 @@ final class CameraViewController: UIViewController {
             diagnosticsLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 66),
         ])
 
-        streamer.onStatus = { [weak self] message in
-            self?.statusLabel.text = message
+        streamer.onStreamHealth = { [weak self] status in
+            self?.statusLabel.text = status
         }
         streamer.onDiagnostics = { [weak self] text in
             self?.diagnosticsLabel.text = text
         }
+        streamer.onOutputOrientation = { [weak self] orientation in
+            self?.confirmedOutputOrientation = orientation
+            self?.orientationControl.selectedSegmentIndex = orientation == .portrait ? 1 : 0
+            self?.updatePreviewOrientation(orientation)
+        }
+        updatePreviewOrientation(.landscape)
     }
 
     override func viewDidLayoutSubviews() {
@@ -74,5 +94,19 @@ final class CameraViewController: UIViewController {
         guard !didStart else { return }
         didStart = true
         streamer.start()
+    }
+
+    @objc private func outputOrientationChanged() {
+        let orientation: OutputOrientation = orientationControl.selectedSegmentIndex == 1 ? .portrait : .landscape
+        // Keep the displayed choice at the confirmed value until the capture
+        // connection accepts the requested rotation.
+        orientationControl.selectedSegmentIndex = confirmedOutputOrientation == .portrait ? 1 : 0
+        streamer.setOutputOrientation(orientation)
+    }
+
+    private func updatePreviewOrientation(_ orientation: OutputOrientation) {
+        guard let connection = previewLayer.connection,
+              connection.isVideoRotationAngleSupported(orientation.rotationAngle) else { return }
+        connection.videoRotationAngle = orientation.rotationAngle
     }
 }

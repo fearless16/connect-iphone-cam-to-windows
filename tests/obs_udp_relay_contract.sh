@@ -25,10 +25,12 @@ awk '
   }
 ' "$receiver"
 
-# MPEG-TS's usual 90 kHz time base: rebasing protects the muxer from an
-# arbitrary device uptime while preserving frame spacing.
-[ $(((1000000 - 1000000) * 90000 / 1000000)) -eq 0 ]
-[ $(((1016667 - 1000000) * 90000 / 1000000)) -eq 1500 ]
-[ $(((2000000 - 1000000) * 90000 / 1000000)) -eq 90000 ]
-
-grep -q "av_rescale_q(relativeUs, AVRational{1, 1'000'000}, muxer_time_base_)" "$receiver"
+# Rebase into MPEG-TS's usual 90 kHz time base without unsigned subtraction.
+# A backwards source timestamp must advance by one 60fps frame instead of
+# producing a giant PTS value or a non-monotonic DTS.
+[ $((16667 * 90000 / 1000000)) -eq 1500 ]
+grep -q 'RelayTimestampClock' "$receiver"
+grep -q 'timestamp_clock_.Rebase(timestampUs)' "$receiver"
+grep -q "av_rescale_q(static_cast<int64_t>(relativeUs)" "$receiver"
+grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
+! grep -q 'timestampUs - first_timestamp_us_' "$receiver"

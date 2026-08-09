@@ -4,6 +4,7 @@
 //        /link <ffmpeg.lib> <libusbmuxd.lib> ws2_32.lib
 
 #include <cstdio>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -17,6 +18,7 @@
 #include <iphlpapi.h>
 
 #include "gpu_frame_publisher.h"
+#include "relay_timestamp.h"
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -84,16 +86,19 @@ public:
 
     bool Write(const AVPacket& source, uint64_t timestampUs, bool isKeyframe) {
         if (!context_ || !stream_) return false;
-        if (first_timestamp_us_ == UINT64_MAX) first_timestamp_us_ = timestampUs;
-        const int64_t relativeUs = static_cast<int64_t>(timestampUs - first_timestamp_us_);
+        const uint64_t relativeUs = timestamp_clock_.Rebase(timestampUs);
         AVPacket* packet = av_packet_alloc();
         if (!packet || av_packet_ref(packet, &source) < 0) {
             av_packet_free(&packet);
             return false;
         }
         packet->stream_index = stream_->index;
-        packet->pts = av_rescale_q(relativeUs, AVRational{1, 1'000'000}, muxer_time_base_);
+        const int64_t candidatePts = av_rescale_q(static_cast<int64_t>(relativeUs),
+                                                   AVRational{1, 1'000'000}, muxer_time_base_);
+        packet->pts = last_mux_pts_ == AV_NOPTS_VALUE
+            ? candidatePts : std::max(candidatePts, last_mux_pts_ + 1);
         packet->dts = packet->pts;
+        last_mux_pts_ = packet->pts;
         packet->duration = av_rescale_q(16'667, AVRational{1, 1'000'000}, muxer_time_base_);
         if (isKeyframe) packet->flags |= AV_PKT_FLAG_KEY;
         const int status = av_interleaved_write_frame(context_, packet);
@@ -136,7 +141,8 @@ private:
     AVStream* stream_ = nullptr;
     bool header_written_ = false;
     AVRational muxer_time_base_{1, 90'000};
-    uint64_t first_timestamp_us_ = UINT64_MAX;
+    RelayTimestampClock timestamp_clock_{};
+    int64_t last_mux_pts_ = AV_NOPTS_VALUE;
     std::chrono::steady_clock::time_point next_write_error_log_{};
 };
 

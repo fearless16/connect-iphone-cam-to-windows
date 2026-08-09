@@ -5,6 +5,24 @@ import CoreMedia
 import CoreVideo
 import Foundation
 
+enum OutputOrientation: String {
+    case landscape
+    case portrait
+
+    static let preferenceKey = "camera.outputOrientation"
+
+    static var stored: OutputOrientation {
+        guard let value = UserDefaults.standard.string(forKey: preferenceKey),
+              let orientation = OutputOrientation(rawValue: value) else {
+            return .landscape
+        }
+        return orientation
+    }
+
+    var title: String { rawValue.capitalized }
+    var rotationAngle: CGFloat { self == .portrait ? 90 : 0 }
+}
+
 /// Steps 1-4 only: 4K60 capture -> hardware HEVC (Annex-B) -> file.
 /// No UI, no network, no segmentation. Run on device with Developer Mode on.
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -30,6 +48,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var recoveryScheduled = false
     private var recoveryAttempt = 0
     private var videoDevice: AVCaptureDevice?
+    private var videoOutput: AVCaptureVideoDataOutput?
+    private var activeOutputOrientation: OutputOrientation = .landscape
     private var notificationTokens: [NSObjectProtocol] = []
     private var pressureObservation: NSKeyValueObservation?
     private var outputFile: FileHandle?
@@ -39,6 +59,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let sender = StreamSender()
     private var frameNumber: UInt32 = 0
     private var encodedFrameNumber: UInt32 = 0
+    private let protocolTimestampLock = NSLock()
+    private var lastProtocolTimestampUs: UInt64 = 0
+    private var encoderWidth = 0
+    private var encoderHeight = 0
+    private var encoderGeneration: UInt64 = 1
     private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     private let telemetryLock = NSLock()
@@ -54,7 +79,24 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var transportDropCount: UInt64 = 0
     private var thermalTelemetry = "THERMAL nominal"
     private var pressureTelemetry = "PRESSURE nominal"
+    private var didReceiveFirstCameraFrame = false
+    private let healthLock = NSLock()
+    private var healthRevision: UInt64 = 0
+    private var healthUpdatesEnabled = false
+    private var cameraHealth = "CAMERA starting"
+    private var usbHealth = "USB waiting for Windows receiver"
+    private var healthEvent = "Preparing camera"
+    private var lastCaptureUptime: TimeInterval = 0
+    private var lastSuccessfulSendUptime: TimeInterval = 0
+    private var receiverState: StreamSenderConnectionState = .waiting
+    private var captureStalledReported = false
+    private var receiverStalledReported = false
+    private var livenessStartedUptime: TimeInterval = 0
+    private var livenessWatchdog: DispatchSourceTimer?
+    private var diagnosticsRevision: UInt64 = 0
     var onDiagnostics: ((String) -> Void)?
+    var onStreamHealth: ((String) -> Void)?
+    var onOutputOrientation: ((OutputOrientation) -> Void)?
 
     override init() {
         super.init()
@@ -105,7 +147,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Step 1: permission + session start
     func start() {
+        beginStreamHealth()
+        updateStreamHealth(camera: "CAMERA starting • requesting access",
+                           event: "Preparing 4K60 camera")
         guard AVCaptureDevice.authorizationStatus(for: .video) != .denied else {
+            updateStreamHealth(camera: "CAMERA error • permission denied",
+                               event: "Camera permission denied")
             report("Camera permission denied")
             return
         }
@@ -115,6 +162,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         } else {
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
                 guard granted else {
+                    self?.updateStreamHealth(camera: "CAMERA error • permission denied",
+                                             event: "Camera permission denied")
                     self?.report("Camera permission denied")
                     return
                 }
@@ -135,6 +184,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
                                                    for: .video,
                                                    position: .back) else {
+            updateStreamHealth(camera: "CAMERA error • back camera unavailable",
+                               event: "No back camera found")
             report("No back camera found")
             session.commitConfiguration()
             return
@@ -151,6 +202,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
 
         guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
+            updateStreamHealth(camera: "CAMERA error • input unavailable",
+                               event: "Camera input unavailable")
             session.commitConfiguration()
             return
         }
@@ -170,14 +223,27 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "capture"))
         guard session.canAddOutput(output) else {
+            updateStreamHealth(camera: "CAMERA error • output unavailable",
+                               event: "Camera output unavailable")
             session.commitConfiguration()
             return
         }
         session.addOutput(output)
+        videoOutput = output
+        guard let initialOrientation = applyInitialOutputOrientation(to: output) else {
+            updateStreamHealth(camera: "CAMERA error • orientation unavailable",
+                               event: "Camera output orientation unavailable")
+            session.commitConfiguration()
+            return
+        }
+        activeOutputOrientation = initialOrientation
+        UserDefaults.standard.set(initialOrientation.rawValue, forKey: OutputOrientation.preferenceKey)
 
         // Input attachment resets the format and duration. Apply them after
         // attachment, within this configuration transaction.
         guard apply4K60Format(to: device) else {
+            updateStreamHealth(camera: "CAMERA error • 4K60 unavailable",
+                               event: "4K60 camera configuration failed")
             session.commitConfiguration()
             return
         }
@@ -195,20 +261,66 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.onStatus = { [weak self] message in
             self?.report(message)
         }
+        sender.onConnectionState = { [weak self] state in
+            self?.sessionQueue.async { [weak self] in
+                guard let self, self.isConfigured, !self.stopped else { return }
+                self.updateUSBHealth(state)
+            }
+        }
         sender.onClientConnected = { [weak self] in
             self?.requestKeyFrame()
         }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
             self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
         }
+        sender.onFrameSent = { [weak self] sentAt in
+            self?.sessionQueue.async { [weak self] in
+                guard let self, self.isConfigured, !self.stopped else { return }
+                self.recordSuccessfulSend(at: sentAt)
+            }
+        }
         sender.start()   // Step 5: begin listening for the Windows receiver
+        startLivenessWatchdog()
         frameStartUptime = ProcessInfo.processInfo.systemUptime
         publishDiagnostics()
+        publishOutputOrientation(initialOrientation)
+        updateStreamHealth(camera: "CAMERA running • waiting for first 4K frame",
+                           usb: "USB waiting for Windows receiver",
+                           event: "Camera started • screen kept awake")
         report("Camera active • screen kept awake • waiting for PC")
+    }
+
+    /// Persists a user-selected frame orientation. The setting affects only the
+    /// camera output connection; USB framing and the receiver protocol stay
+    /// unchanged. The receiver reconnect makes OBS see a clean HEVC sequence
+    /// after the encoder begins producing frames in the new dimensions.
+    func setOutputOrientation(_ orientation: OutputOrientation) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.isConfigured, !self.stopped, let output = self.videoOutput else {
+                self.publishOutputOrientation(self.activeOutputOrientation)
+                return
+            }
+            self.session.beginConfiguration()
+            let applied = self.applyOutputOrientation(orientation, to: output)
+            self.session.commitConfiguration()
+            guard applied else {
+                self.publishOutputOrientation(self.activeOutputOrientation)
+                return
+            }
+            self.activeOutputOrientation = orientation
+            UserDefaults.standard.set(orientation.rawValue, forKey: OutputOrientation.preferenceKey)
+            self.invalidateEncoder(reason: nil)
+            self.sender.restartListening(reason: "Output changed to \(orientation.title)")
+            self.requestKeyFrame()
+            self.publishOutputOrientation(orientation)
+            self.report("Output \(orientation.title) selected • reconnecting PC")
+        }
     }
 
     // MARK: - Step 4: VideoToolbox hardware HEVC encoder
     private func createEncoder(width: Int, height: Int) {
+        let generation = reserveEncoderGeneration()
         let imageBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         ]
@@ -222,11 +334,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             encoderSpecification: nil,
             imageBufferAttributes: imageBufferAttributes as CFDictionary,
             compressedDataAllocator: nil,
-            outputCallback: { (refcon, _, status, _, sampleBuffer) in
+            outputCallback: { (refcon, sourceFrameRefcon, status, _, sampleBuffer) in
                 guard let sb = sampleBuffer, status == noErr else { return }
                 let streamer = Unmanaged<CameraStreamer>.fromOpaque(refcon!).takeUnretainedValue()
+                let generation = UInt64(UInt(bitPattern: sourceFrameRefcon))
+                guard streamer.isCurrentEncoderGeneration(generation) else { return }
                 streamer.recordEncodedFrame(CMSampleBufferGetPresentationTimeStamp(sb))
-                streamer.writeAnnexB(sampleBuffer: sb)
+                streamer.writeAnnexB(sampleBuffer: sb, generation: generation)
             },
             refcon: refcon,
             compressionSessionOut: &sessionOut)
@@ -263,10 +377,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
         }
-        encoderStateLock.lock()
-        encoder = enc
-        encoderSetupFailed = false
-        encoderStateLock.unlock()
+        guard installEncoder(enc, width: width, height: height, generation: generation) else {
+            VTCompressionSessionInvalidate(enc)
+            return
+        }
     }
 
     func captureOutput(_ output: AVCaptureOutput,
@@ -275,7 +389,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let width = CVPixelBufferGetWidth(px)
         let height = CVPixelBufferGetHeight(px)
-        guard width == 3840, height == 2160 else {
+        guard is4KFrame(width: width, height: height) else {
             if !reportedNon4KFrame {
                 reportedNon4KFrame = true
                 report("Camera delivered \(width)x\(height), not 4K")
@@ -284,20 +398,23 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         recordSensorFrame(pts)
+        if encoderNeedsRebuild(width: width, height: height) {
+            invalidateEncoder(reason: nil)
+        }
         if activeEncoder() == nil && !isEncoderSetupFailed() {
             createEncoder(width: width, height: height)
         }
-        guard let enc = activeEncoder() else { return }
+        guard let activeEncoder = activeEncoder() else { return }
         let frameProperties: CFDictionary? = consumeForcedKeyFrame()
             ? [kVTEncodeFrameOptionKey_ForceKeyFrame as String: true] as CFDictionary
             : nil
         var flags: VTEncodeInfoFlags = []
-        let status = VTCompressionSessionEncodeFrame(enc,
+        let status = VTCompressionSessionEncodeFrame(activeEncoder.session,
                                                      imageBuffer: px,
                                                      presentationTimeStamp: pts,
                                                      duration: .invalid,
                                                      frameProperties: frameProperties,
-                                                     sourceFrameRefcon: nil,
+                                                     sourceFrameRefcon: UnsafeMutableRawPointer(bitPattern: UInt(activeEncoder.generation)),
                                                      infoFlagsOut: &flags)
         if status != noErr {
             invalidateEncoder(reason: status == kVTInvalidSessionErr
@@ -327,7 +444,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     // MARK: - Annex-B conversion (length-prefixed -> start codes)
-    func writeAnnexB(sampleBuffer: CMSampleBuffer) {
+    func writeAnnexB(sampleBuffer: CMSampleBuffer, generation: UInt64) {
         guard let desc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
 
         var annexB = Data()
@@ -412,9 +529,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             report("Encoder marked a non-random-access frame as keyframe")
         }
 
+        // The callback can outlive a VideoToolbox session invalidation. Check
+        // again after Annex-B conversion, immediately before a packet enters
+        // the sender queue, so an old orientation cannot cross the reconnect.
+        guard isCurrentEncoderGeneration(generation) else { return }
         if saveEncodedStream { outputFile?.write(annexB) }
         sender.send(frameNumber: nextEncodedFrameNumber(),
-                    timestampUs: presentationTimestampUs(sampleBuffer),
+                    timestampUs: nextProtocolTimestampUs(),
                     codec: StreamCodec.hevc.rawValue,
                     isKeyframe: isKeyframe && containsRandomAccessPicture,
                     frame: annexB)
@@ -451,10 +572,44 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return UInt64(mach_absolute_time()) * UInt64(info.numer) / UInt64(info.denom) / 1000
     }
 
-    private func presentationTimestampUs(_ sampleBuffer: CMSampleBuffer) -> UInt64 {
-        let seconds = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
-        guard seconds.isFinite, seconds >= 0 else { return monotonicUs() }
-        return UInt64(seconds * 1_000_000.0)
+    private func nextProtocolTimestampUs() -> UInt64 {
+        protocolTimestampLock.lock()
+        defer { protocolTimestampLock.unlock() }
+        lastProtocolTimestampUs = max(monotonicUs(), lastProtocolTimestampUs + 1)
+        return lastProtocolTimestampUs
+    }
+
+    private func is4KFrame(width: Int, height: Int) -> Bool {
+        (width == 3840 && height == 2160) || (width == 2160 && height == 3840)
+    }
+
+    private func encoderNeedsRebuild(width: Int, height: Int) -> Bool {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return encoder != nil && (encoderWidth != width || encoderHeight != height)
+    }
+
+    private func applyOutputOrientation(_ orientation: OutputOrientation,
+                                        to output: AVCaptureVideoDataOutput) -> Bool {
+        guard let connection = output.connection(with: .video) else {
+            report("Camera output connection unavailable")
+            return false
+        }
+        guard connection.isVideoRotationAngleSupported(orientation.rotationAngle) else {
+            report("\(orientation.title) output is not supported by this iPhone")
+            return false
+        }
+        connection.videoRotationAngle = orientation.rotationAngle
+        return true
+    }
+
+    private func applyInitialOutputOrientation(to output: AVCaptureVideoDataOutput) -> OutputOrientation? {
+        let preferred = OutputOrientation.stored
+        if applyOutputOrientation(preferred, to: output) { return preferred }
+        guard preferred != .landscape,
+              applyOutputOrientation(.landscape, to: output) else { return nil }
+        report("Portrait output unavailable • falling back to Landscape")
+        return .landscape
     }
 
     private func refreshActiveFormatTelemetry(_ device: AVCaptureDevice) {
@@ -518,17 +673,25 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         usbFPS = 0
         captureDropCount = 0
         transportDropCount = 0
+        didReceiveFirstCameraFrame = false
         telemetryLock.unlock()
     }
 
     private func recordSensorFrame(_ pts: CMTime) {
         telemetryLock.lock()
         if !sensorFirstPTS.isValid { sensorFirstPTS = pts }
+        let isFirstCameraFrame = !didReceiveFirstCameraFrame
+        didReceiveFirstCameraFrame = true
         sensorFrameCount &+= 1
         let elapsed = CMTimeGetSeconds(CMTimeSubtract(pts, sensorFirstPTS))
         if elapsed > 0 { sensorFPS = Double(sensorFrameCount - 1) / elapsed }
         let shouldPublish = sensorFrameCount % 30 == 0
         telemetryLock.unlock()
+        recordCaptureLiveness(at: ProcessInfo.processInfo.systemUptime)
+        if isFirstCameraFrame {
+            updateStreamHealth(camera: "CAMERA active • first 4K frame received",
+                               event: "Camera capture is live")
+        }
         if shouldPublish { publishDiagnostics() }
     }
 
@@ -561,12 +724,191 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func publishDiagnostics() {
         telemetryLock.lock()
+        diagnosticsRevision &+= 1
+        let revision = diagnosticsRevision
         let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • transport %llu",
                           activeFormatTelemetry, thermalTelemetry, pressureTelemetry,
                           sensorFPS, encoderFPS, usbFPS,
                           captureDropCount, transportDropCount)
         telemetryLock.unlock()
-        DispatchQueue.main.async { [weak self] in self?.onDiagnostics?(text) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isCurrentDiagnosticsRevision(revision) else { return }
+            self.onDiagnostics?(text)
+        }
+    }
+
+    // The capture callback, VideoToolbox callback, Network.framework queue,
+    // and AVCapture notifications all arrive independently. Keep one bounded
+    // health snapshot and reject any queued UIKit update from an old session.
+    private func beginStreamHealth() {
+        healthLock.lock()
+        healthRevision &+= 1
+        healthUpdatesEnabled = true
+        cameraHealth = "CAMERA starting"
+        usbHealth = "USB waiting for Windows receiver"
+        healthEvent = "Preparing camera"
+        let revision = healthRevision
+        let text = healthSnapshotLocked()
+        healthLock.unlock()
+        telemetryLock.lock()
+        diagnosticsRevision &+= 1
+        telemetryLock.unlock()
+        deliverStreamHealth(text, revision: revision)
+    }
+
+    private func endStreamHealth() {
+        healthLock.lock()
+        healthUpdatesEnabled = false
+        healthRevision &+= 1
+        healthLock.unlock()
+        telemetryLock.lock()
+        diagnosticsRevision &+= 1
+        telemetryLock.unlock()
+    }
+
+    private func updateUSBHealth(_ state: StreamSenderConnectionState) {
+        healthLock.lock()
+        receiverState = state
+        if state != .sending {
+            lastSuccessfulSendUptime = 0
+            receiverStalledReported = false
+        }
+        healthLock.unlock()
+        switch state {
+        case .waiting:
+            updateStreamHealth(usb: "USB waiting for Windows receiver")
+        case .connected:
+            updateStreamHealth(usb: "PC receiver connected • waiting for first video frame")
+        case .sending:
+            updateStreamHealth(usb: "USB connected • PC receiver receiving video")
+        case .disconnected:
+            updateStreamHealth(usb: "PC receiver disconnected • waiting for receiver")
+        case .failed:
+            updateStreamHealth(usb: "USB connection error • reconnecting")
+        }
+    }
+
+    private func updateStreamHealth(camera: String? = nil,
+                                    usb: String? = nil,
+                                    event: String? = nil) {
+        healthLock.lock()
+        guard healthUpdatesEnabled else {
+            healthLock.unlock()
+            return
+        }
+        if let camera { cameraHealth = camera }
+        if let usb { usbHealth = usb }
+        if let event { healthEvent = event }
+        healthRevision &+= 1
+        let revision = healthRevision
+        let text = healthSnapshotLocked()
+        healthLock.unlock()
+        deliverStreamHealth(text, revision: revision)
+    }
+
+    private func healthSnapshotLocked() -> String {
+        "\(cameraHealth)\n\(usbHealth)\nSTATUS: \(healthEvent)"
+    }
+
+    private func deliverStreamHealth(_ text: String, revision: UInt64) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isCurrentHealthRevision(revision) else { return }
+            self.onStreamHealth?(text)
+        }
+    }
+
+    private func isCurrentHealthRevision(_ revision: UInt64) -> Bool {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        return healthUpdatesEnabled && healthRevision == revision
+    }
+
+    private func isCurrentDiagnosticsRevision(_ revision: UInt64) -> Bool {
+        telemetryLock.lock()
+        let isCurrent = diagnosticsRevision == revision
+        telemetryLock.unlock()
+        healthLock.lock()
+        let isEnabled = healthUpdatesEnabled
+        healthLock.unlock()
+        return isCurrent && isEnabled
+    }
+
+    // Observability only: this timer never restarts capture, VideoToolbox, or
+    // the sender. It gives the person holding the phone an honest stalled or
+    // recovered state while existing recovery paths keep their ownership.
+    private func startLivenessWatchdog() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard livenessWatchdog == nil else { return }
+        healthLock.lock()
+        let now = ProcessInfo.processInfo.systemUptime
+        livenessStartedUptime = now
+        lastCaptureUptime = 0
+        lastSuccessfulSendUptime = 0
+        receiverState = .waiting
+        captureStalledReported = false
+        receiverStalledReported = false
+        healthLock.unlock()
+        let timer = DispatchSource.makeTimerSource(queue: sessionQueue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in self?.evaluateLiveness() }
+        livenessWatchdog = timer
+        timer.resume()
+    }
+
+    private func stopLivenessWatchdog() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        livenessWatchdog?.setEventHandler {}
+        livenessWatchdog?.cancel()
+        livenessWatchdog = nil
+    }
+
+    private func recordCaptureLiveness(at uptime: TimeInterval) {
+        healthLock.lock()
+        lastCaptureUptime = uptime
+        let resumed = captureStalledReported
+        captureStalledReported = false
+        healthLock.unlock()
+        if resumed {
+            updateStreamHealth(camera: "CAMERA active • 4K capture resumed",
+                               event: "Camera frames resumed")
+        }
+    }
+
+    private func recordSuccessfulSend(at uptime: TimeInterval) {
+        healthLock.lock()
+        lastSuccessfulSendUptime = uptime
+        let resumed = receiverStalledReported
+        receiverStalledReported = false
+        healthLock.unlock()
+        if resumed {
+            updateStreamHealth(usb: "USB connected • PC receiver receiving video",
+                               event: "Video packets resumed")
+        }
+    }
+
+    private func evaluateLiveness() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard isConfigured, !stopped, appIsActive else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        healthLock.lock()
+        let captureAge = lastCaptureUptime == 0 ? now - livenessStartedUptime : now - lastCaptureUptime
+        let shouldReportCaptureStall = captureAge >= 3 && !captureStalledReported
+        if shouldReportCaptureStall { captureStalledReported = true }
+
+        let receiverActive = receiverState == .connected || receiverState == .sending
+        let sendAge = lastSuccessfulSendUptime == 0 ? now - livenessStartedUptime : now - lastSuccessfulSendUptime
+        let shouldReportReceiverStall = receiverActive && sendAge >= 3 && !receiverStalledReported
+        if shouldReportReceiverStall { receiverStalledReported = true }
+        healthLock.unlock()
+
+        if shouldReportCaptureStall {
+            updateStreamHealth(camera: "CAMERA stalled • no 4K frame for 3s",
+                               event: "Camera feedback watchdog detected a stall")
+        }
+        if shouldReportReceiverStall {
+            updateStreamHealth(usb: "USB stalled • PC receiver not receiving video",
+                               event: "Receiver feedback watchdog detected no successful packet for 3s")
+        }
     }
 
     private func openOutputFile() {
@@ -579,9 +921,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     func stop() {
+        endStreamHealth()
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.stopped = true
+            self.stopLivenessWatchdog()
             self.session.stopRunning()
             self.setIdleTimerDisabled(false)
             self.invalidateEncoder(reason: nil)
@@ -593,8 +937,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func report(_ message: String) {
         print("STATUS: \(message)")
+        updateStreamHealth(event: message)
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
+        }
+    }
+
+    private func publishOutputOrientation(_ orientation: OutputOrientation) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onOutputOrientation?(orientation)
         }
     }
 
@@ -620,10 +971,38 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return shouldForce
     }
 
-    private func activeEncoder() -> VTCompressionSession? {
+    private func activeEncoder() -> (session: VTCompressionSession, generation: UInt64)? {
         encoderStateLock.lock()
         defer { encoderStateLock.unlock() }
-        return encoder
+        guard let encoder else { return nil }
+        return (encoder, encoderGeneration)
+    }
+
+    private func reserveEncoderGeneration() -> UInt64 {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        encoderGeneration &+= 1
+        return encoderGeneration
+    }
+
+    private func installEncoder(_ newEncoder: VTCompressionSession,
+                                width: Int,
+                                height: Int,
+                                generation: UInt64) -> Bool {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        guard encoderGeneration == generation else { return false }
+        encoder = newEncoder
+        encoderWidth = width
+        encoderHeight = height
+        encoderSetupFailed = false
+        return true
+    }
+
+    private func isCurrentEncoderGeneration(_ generation: UInt64) -> Bool {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return encoder != nil && encoderGeneration == generation
     }
 
     private func isEncoderSetupFailed() -> Bool {
@@ -642,6 +1021,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         encoderStateLock.lock()
         let oldEncoder = encoder
         encoder = nil
+        encoderWidth = 0
+        encoderHeight = 0
+        encoderGeneration &+= 1
         encoderSetupFailed = false
         forceNextKeyFrame = true
         encoderStateLock.unlock()
@@ -663,12 +1045,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func pauseRecoveryForBackground() {
         sessionQueue.async { [weak self] in
             self?.appIsActive = false
+            self?.stopLivenessWatchdog()
         }
     }
 
     private func handleSessionInterruption() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, !self.stopped else { return }
+            self.updateStreamHealth(camera: "CAMERA interrupted • recovering",
+                                    event: "Camera interrupted")
             self.invalidateEncoder(reason: "Camera interrupted")
         }
     }
@@ -677,6 +1062,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, !self.stopped else { return }
+            self.updateStreamHealth(camera: "CAMERA error • recovering",
+                                    event: "Camera runtime reset")
             self.invalidateEncoder(reason: "Camera runtime reset")
             if error?.code == .mediaServicesWereReset || !self.session.isRunning {
                 self.scheduleRecoveryOnSessionQueue(reason: "Camera runtime reset")
@@ -687,6 +1074,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func handleSessionStopped() {
         sessionQueue.async { [weak self] in
             guard let self, self.isConfigured, !self.stopped else { return }
+            self.updateStreamHealth(camera: "CAMERA stopped • recovering",
+                                    event: "Camera stopped unexpectedly")
             self.invalidateEncoder(reason: "Camera stopped unexpectedly")
             self.scheduleRecoveryOnSessionQueue(reason: "Camera stop recovery")
         }
@@ -749,6 +1138,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func recoverSession(reason: String) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard appIsActive, isConfigured, !stopped, let device = videoDevice else { return }
+        updateStreamHealth(camera: "CAMERA recovering • waiting for first 4K frame",
+                           event: reason)
         session.beginConfiguration()
         let configured = apply4K60Format(to: device)
         session.commitConfiguration()
@@ -764,6 +1155,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         refreshActiveFormatTelemetry(device)
         sender.restartListening(reason: "USB listener rebound after camera recovery")
+        startLivenessWatchdog()
         requestKeyFrame()
         recoveryAttempt = 0
         report(reason)
