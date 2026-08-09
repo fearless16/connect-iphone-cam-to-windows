@@ -17,6 +17,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Test length-prefixed HEVC conversion
+        run: |
+          xcrun swiftc -swift-version 5 \
+            ios/LengthPrefixedHEVC.swift \
+            tests/length_prefixed_hevc_test.swift \
+            -o /tmp/length_prefixed_hevc_test
+          /tmp/length_prefixed_hevc_test
+          sh tests/length_prefixed_hevc_source_contract.sh
+          xcrun swiftc -swift-version 5 \
+            ios/LengthPrefixedHEVC.swift \
+            tests/cmblockbuffer_hevc_test.swift \
+            -framework CoreMedia \
+            -o /tmp/cmblockbuffer_hevc_test
+          /tmp/cmblockbuffer_hevc_test
+          sh tests/cmblockbuffer_hevc_source_contract.sh
+
       - name: Build unsigned app
         run: |
           xcodebuild clean build \
@@ -81,6 +97,8 @@ jobs:
             "${{ github.workspace }}/windows/virtual_camera.cpp"
           sh "${{ github.workspace }}/tests/receiver_source_contract.sh" \
             "${{ github.workspace }}/windows/receiver.cpp"
+          sh "${{ github.workspace }}/tests/windows_ci_contract.sh" \
+            "${{ github.workspace }}/.github/workflows/build.yml"
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/tests/protocol_selftest.cpp" \
@@ -91,6 +109,21 @@ jobs:
             "${{ github.workspace }}/tests/virtual_camera_contract_test.cpp" \
             -o virtual_camera_contract_test.exe
           ./virtual_camera_contract_test.exe
+          g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/relay_timestamp_clock_test.cpp" \
+            -o relay_timestamp_clock_test.exe
+          ./relay_timestamp_clock_test.exe
+          g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/relay_recovery_gate_test.cpp" \
+            -o relay_recovery_gate_test.exe
+          ./relay_recovery_gate_test.exe
+          g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/hevc_access_unit_test.cpp" \
+            -o hevc_access_unit_test.exe
+          ./hevc_access_unit_test.exe
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \

@@ -64,7 +64,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var encoderWidth = 0
     private var encoderHeight = 0
     private var encoderGeneration: UInt64 = 1
-    private let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
+    // Protected by encoderStateLock. Prevents a 60fps stream from dispatching
+    // one recovery-backoff reset for every successful output callback.
+    private var recoveryBackoffResetGeneration: UInt64 = 0
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     private let telemetryLock = NSLock()
     private var activeFormatTelemetry = "Waiting for 4K60 format"
@@ -76,6 +78,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var encoderFPS = 0.0
     private var usbFPS = 0.0
     private var captureDropCount: UInt64 = 0
+    private var encoderDropCount: UInt64 = 0
+    private var malformedAccessUnitDropCount: UInt64 = 0
     private var transportDropCount: UInt64 = 0
     private var thermalTelemetry = "THERMAL nominal"
     private var pressureTelemetry = "PRESSURE nominal"
@@ -334,11 +338,24 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             encoderSpecification: nil,
             imageBufferAttributes: imageBufferAttributes as CFDictionary,
             compressedDataAllocator: nil,
-            outputCallback: { (refcon, sourceFrameRefcon, status, _, sampleBuffer) in
-                guard let sb = sampleBuffer, status == noErr else { return }
-                let streamer = Unmanaged<CameraStreamer>.fromOpaque(refcon!).takeUnretainedValue()
+            outputCallback: { (refcon, sourceFrameRefcon, status, infoFlags, sampleBuffer) in
+                guard let refcon else { return }
+                let streamer = Unmanaged<CameraStreamer>.fromOpaque(refcon).takeUnretainedValue()
                 let generation = UInt64(UInt(bitPattern: sourceFrameRefcon))
                 guard streamer.isCurrentEncoderGeneration(generation) else { return }
+                if status == noErr,
+                   sampleBuffer == nil,
+                   infoFlags.contains(.frameDropped) {
+                    streamer.recordEncoderDrop()
+                    return
+                }
+                guard status == noErr, let sb = sampleBuffer else {
+                    streamer.handleEncoderOutputFailure(status: status,
+                                                        sampleBufferMissing: sampleBuffer == nil,
+                                                        generation: generation)
+                    return
+                }
+                streamer.markEncoderOutputSuccessful(generation: generation)
                 streamer.recordEncodedFrame(CMSampleBufferGetPresentationTimeStamp(sb))
                 streamer.writeAnnexB(sampleBuffer: sb, generation: generation)
             },
@@ -447,13 +464,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func writeAnnexB(sampleBuffer: CMSampleBuffer, generation: UInt64) {
         guard let desc = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
 
-        var annexB = Data()
-
-        // A new Windows receiver can attach at any time. Include VPS/SPS/PPS
-        // with every IDR so it can decode without waiting for an app restart.
+        // VideoToolbox attachment metadata can be stale after recovery. It is
+        // diagnostic only; parsed HEVC NAL types decide decoder admission.
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer,
                                                                     createIfNecessary: false) as? [[CFString: Any]]
-        let isKeyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
+        let metadataMarksKeyframe =
+            (attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool).map { !$0 }
         var parameterSetCount = 0
         var nalUnitHeaderLength: Int32 = 0
         var parameterSetPointer: UnsafePointer<UInt8>?
@@ -469,7 +485,38 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             report("HEVC parameter-set read failed: \(parameterStatus)")
             return
         }
-        if isKeyframe {
+        guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
+            recordMalformedAccessUnitDrop(reason: "encoded sample has no data buffer")
+            return
+        }
+
+        let lengthFieldBytes = Int(nalUnitHeaderLength)
+        let encodedAccessUnit: Data
+        do {
+            encodedAccessUnit = try LengthPrefixedHEVC.convert(
+                dataBuffer,
+                lengthFieldBytes: lengthFieldBytes)
+        } catch let error as LengthPrefixedHEVCConversionError {
+            recordMalformedAccessUnitDrop(reason: error.description)
+            return
+        } catch {
+            recordMalformedAccessUnitDrop(reason: String(describing: error))
+            return
+        }
+
+        let containsRandomAccessPicture = LengthPrefixedHEVC.containsIDR(encodedAccessUnit)
+        if let metadataMarksKeyframe,
+           metadataMarksKeyframe != containsRandomAccessPicture {
+            report(containsRandomAccessPicture
+                   ? "HEVC IDR marked NotSync; using parsed IDR"
+                   : "Metadata keyframe lacks HEVC IDR; treating as delta")
+        }
+
+        var annexB = encodedAccessUnit
+        // A new Windows receiver can attach at any time. Include VPS/SPS/PPS
+        // with every parsed IDR even if its attachment incorrectly says NotSync.
+        if containsRandomAccessPicture {
+            var parameterSets = Data()
             for index in 0..<parameterSetCount {
                 if index > 0 {
                     let nextStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
@@ -485,48 +532,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     }
                 }
                 if let parameterSetPointer, parameterSetSize > 0 {
-                    annexB.append(contentsOf: startCode)
-                    annexB.append(Data(bytes: parameterSetPointer, count: parameterSetSize))
+                    parameterSets.append(contentsOf: [0x00, 0x00, 0x00, 0x01])
+                    parameterSets.append(Data(bytes: parameterSetPointer, count: parameterSetSize))
                 }
             }
-        }
-
-        guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var length: Int = 0
-        var total: Int = 0
-        var ptr: UnsafeMutablePointer<Int8>?
-        let status = CMBlockBufferGetDataPointer(dataBuffer,
-                                                atOffset: 0,
-                                                lengthAtOffsetOut: &length,
-                                                totalLengthOut: &total,
-                                                dataPointerOut: &ptr)
-        guard status == kCMBlockBufferNoErr,
-              let base = ptr,
-              total > 0 else { return }
-
-        let bytes = UnsafeRawPointer(base).assumingMemoryBound(to: UInt8.self)
-
-        let lengthFieldBytes = Int(nalUnitHeaderLength)
-        var offset = 0
-        while offset + lengthFieldBytes <= total {
-            var nalLen = 0
-            for byteIndex in 0..<lengthFieldBytes {
-                nalLen = (nalLen << 8) | Int(bytes[offset + byteIndex])
-            }
-            offset += lengthFieldBytes
-            guard nalLen > 0, offset + nalLen <= total else { break }
-            annexB.append(contentsOf: startCode)
-            annexB.append(Data(bytes: bytes.advanced(by: offset), count: nalLen))
-            offset += nalLen
-        }
-
-        // CMSample attachment metadata is normally correct, but after a
-        // capture/encoder interruption it can be absent. Do not let a delta
-        // frame open a new USB connection: the receiver has no reference
-        // pictures until an HEVC random-access picture arrives.
-        let containsRandomAccessPicture = containsHEVCRandomAccessPicture(annexB)
-        if isKeyframe && !containsRandomAccessPicture {
-            report("Encoder marked a non-random-access frame as keyframe")
+            parameterSets.append(encodedAccessUnit)
+            annexB = parameterSets
         }
 
         // The callback can outlive a VideoToolbox session invalidation. Check
@@ -537,33 +548,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.send(frameNumber: nextEncodedFrameNumber(),
                     timestampUs: nextProtocolTimestampUs(),
                     codec: StreamCodec.hevc.rawValue,
-                    isKeyframe: isKeyframe && containsRandomAccessPicture,
+                    isKeyframe: containsRandomAccessPicture,
                     frame: annexB)
-    }
-
-    private func containsHEVCRandomAccessPicture(_ annexB: Data) -> Bool {
-        let bytes = [UInt8](annexB)
-        var index = 0
-        while index + 5 < bytes.count {
-            let startCodeLength: Int
-            if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
-                startCodeLength = 3
-            } else if bytes[index] == 0, bytes[index + 1] == 0,
-                      bytes[index + 2] == 0, bytes[index + 3] == 1 {
-                startCodeLength = 4
-            } else {
-                index += 1
-                continue
-            }
-            let nalOffset = index + startCodeLength
-            guard nalOffset < bytes.count else { return false }
-            let nalType = (bytes[nalOffset] >> 1) & 0x3f
-            // USB clients join an already-running encoder. Only an IDR (not
-            // CRA/BLA) guarantees no missing reference picture is required.
-            if (19...20).contains(nalType) { return true }
-            index = nalOffset + 1
-        }
-        return false
     }
 
     private func monotonicUs() -> UInt64 {
@@ -706,6 +692,25 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if shouldPublish { publishDiagnostics() }
     }
 
+    private func recordEncoderDrop() {
+        telemetryLock.lock()
+        encoderDropCount &+= 1
+        let shouldPublish = encoderDropCount == 1 || encoderDropCount % 30 == 0
+        telemetryLock.unlock()
+        if shouldPublish { publishDiagnostics() }
+    }
+
+    private func recordMalformedAccessUnitDrop(reason: String) {
+        telemetryLock.lock()
+        malformedAccessUnitDropCount &+= 1
+        let count = malformedAccessUnitDropCount
+        let shouldPublish = count == 1 || count % 30 == 0
+        telemetryLock.unlock()
+        guard shouldPublish else { return }
+        publishDiagnostics()
+        report("Dropped malformed HEVC access unit #\(count): \(reason)")
+    }
+
     private func recordTransport(fps: Double, droppedFrames: UInt64) {
         telemetryLock.lock()
         usbFPS = fps
@@ -726,10 +731,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         telemetryLock.lock()
         diagnosticsRevision &+= 1
         let revision = diagnosticsRevision
-        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • transport %llu",
+        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • HEVC %llu • malformed %llu • transport %llu",
                           activeFormatTelemetry, thermalTelemetry, pressureTelemetry,
                           sensorFPS, encoderFPS, usbFPS,
-                          captureDropCount, transportDropCount)
+                          captureDropCount, encoderDropCount,
+                          malformedAccessUnitDropCount, transportDropCount)
         telemetryLock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isCurrentDiagnosticsRevision(revision) else { return }
@@ -1005,6 +1011,61 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return encoder != nil && encoderGeneration == generation
     }
 
+    private func markEncoderOutputSuccessful(generation: UInt64) {
+        var shouldResetBackoff = false
+        encoderStateLock.lock()
+        if encoder != nil,
+           encoderGeneration == generation,
+           recoveryBackoffResetGeneration != generation {
+            recoveryBackoffResetGeneration = generation
+            shouldResetBackoff = true
+        }
+        encoderStateLock.unlock()
+        guard shouldResetBackoff else { return }
+        sessionQueue.async { [weak self] in
+            guard let self, self.isCurrentEncoderGeneration(generation) else { return }
+            self.recoveryAttempt = 0
+        }
+    }
+
+    private func claimEncoderOutputFailure(generation: UInt64) -> VTCompressionSession? {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        guard let failedEncoder = encoder,
+              encoderGeneration == generation else { return nil }
+        // Quarantine synchronously while still inside the callback: all later
+        // output from this generation becomes stale before recovery is queued.
+        encoder = nil
+        encoderWidth = 0
+        encoderHeight = 0
+        encoderGeneration &+= 1
+        encoderSetupFailed = true
+        forceNextKeyFrame = true
+        return failedEncoder
+    }
+
+    private func handleEncoderOutputFailure(status: OSStatus,
+                                            sampleBufferMissing: Bool,
+                                            generation: UInt64) {
+        guard let failedEncoder = claimEncoderOutputFailure(generation: generation) else { return }
+        let reason = status != noErr
+            ? "HEVC encoder callback failed: \(status)"
+            : (sampleBufferMissing
+               ? "HEVC encoder callback returned no frame"
+               : "HEVC encoder callback failed")
+        // Returning from VideoToolbox's callback before invalidating its
+        // session avoids re-entrancy/deadlock risk. Only the callback which
+        // claimed the generation owns this queued recovery.
+        sessionQueue.async { [weak self] in
+            VTCompressionSessionInvalidate(failedEncoder)
+            guard let self, self.appIsActive, self.isConfigured, !self.stopped else { return }
+            self.updateStreamHealth(camera: "CAMERA encoder error • recovering",
+                                    event: reason)
+            self.report(reason)
+            self.scheduleRecoveryOnSessionQueue(reason: "Encoder callback recovery")
+        }
+    }
+
     private func isEncoderSetupFailed() -> Bool {
         encoderStateLock.lock()
         defer { encoderStateLock.unlock() }
@@ -1157,7 +1218,6 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.restartListening(reason: "USB listener rebound after camera recovery")
         startLivenessWatchdog()
         requestKeyFrame()
-        recoveryAttempt = 0
         report(reason)
     }
 

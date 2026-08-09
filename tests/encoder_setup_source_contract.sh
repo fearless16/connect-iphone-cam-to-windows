@@ -29,6 +29,82 @@ grep -q 'handleSessionStopped' "$source"
 grep -q 'sender.restartListening' "$source"
 grep -q 'Encoder recovery' "$source"
 grep -q 'HEVC encoder setup recovery' "$source"
+# VideoToolbox may report an asynchronous output failure after EncodeFrame
+# itself succeeded. That callback must not fail silently or invalidate the
+# session from VideoToolbox's callback thread.
+! grep -q 'guard let sb = sampleBuffer, status == noErr else { return }' "$source"
+grep -q 'handleEncoderOutputFailure' "$source"
+grep -q 'CAMERA encoder error • recovering' "$source"
+grep -q 'Encoder callback recovery' "$source"
+# A nil sample carrying VideoToolbox's documented frameDropped flag is normal
+# pressure telemetry, not proof that the encoder session is broken.
+grep -q 'if status == noErr,' "$source"
+grep -q 'guard status == noErr, let sb = sampleBuffer else' "$source"
+grep -q 'infoFlags.contains(.frameDropped)' "$source"
+grep -q 'recordEncoderDrop' "$source"
+grep -q 'encoderDropCount' "$source"
+grep -q 'HEVC %llu' "$source"
+awk '
+  /outputCallback:/ { in_callback = 1 }
+  in_callback && /infoFlags\.contains\(\.frameDropped\)/ { dropped_line = NR }
+  in_callback && /handleEncoderOutputFailure/ { failure_line = NR }
+  in_callback && /refcon: refcon/ {
+    exit !(dropped_line && failure_line && dropped_line < failure_line)
+  }
+' "$source"
+# The callback synchronously claims and quarantines one failed generation. A
+# burst of delayed callbacks can therefore neither emit frames nor enqueue
+# duplicate recoveries while VideoToolbox invalidation stays off its thread.
+grep -q 'claimEncoderOutputFailure' "$source"
+awk '
+  /private func claimEncoderOutputFailure/ { in_claim = 1 }
+  in_claim && /encoderStateLock\.lock\(\)/ { lock_line = NR }
+  in_claim && /encoderGeneration == generation/ { generation_line = NR }
+  in_claim && /encoder = nil/ { quarantine_line = NR }
+  in_claim && /encoderGeneration &\+= 1/ { advance_line = NR }
+  in_claim && /encoderSetupFailed = true/ { failed_line = NR }
+  /private func handleEncoderOutputFailure/ {
+    exit !(lock_line && generation_line && quarantine_line && advance_line && failed_line &&
+           lock_line < generation_line && generation_line < quarantine_line &&
+           quarantine_line < advance_line && advance_line < failed_line)
+  }
+' "$source"
+awk '
+  /private func handleEncoderOutputFailure/ { in_handler = 1 }
+  in_handler && /claimEncoderOutputFailure\(generation:/ { claim_line = NR }
+  in_handler && /sessionQueue\.async/ { async_line = NR }
+  in_handler && /VTCompressionSessionInvalidate\(failedEncoder\)/ { invalidate_line = NR }
+  in_handler && /scheduleRecoveryOnSessionQueue/ { recovery_line = NR }
+  /private func isEncoderSetupFailed/ {
+    exit !(claim_line && async_line && invalidate_line && recovery_line &&
+           claim_line < async_line && async_line < invalidate_line &&
+           invalidate_line < recovery_line)
+  }
+' "$source"
+# Backoff resets only after the first successful output of a generation. It
+# must not reset merely because recoverSession restarted capture, and the
+# per-generation marker prevents dispatching one reset block per 60fps frame.
+grep -q 'markEncoderOutputSuccessful' "$source"
+grep -q 'recoveryBackoffResetGeneration' "$source"
+awk '
+  /private func recoverSession\(reason:/ { in_recover = 1 }
+  in_recover && /recoveryAttempt = 0/ { premature_reset = 1 }
+  /private func scheduleRecovery\(reason:/ { exit premature_reset ? 1 : 0 }
+' "$source"
+awk '
+  /private func markEncoderOutputSuccessful/ { in_success = 1 }
+  in_success && /encoderStateLock\.lock\(\)/ { lock_line = NR }
+  in_success && /recoveryBackoffResetGeneration != generation/ { once_line = NR }
+  in_success && /guard shouldResetBackoff else/ { guard_line = NR }
+  in_success && /sessionQueue\.async/ { async_line = NR }
+  in_success && /isCurrentEncoderGeneration\(generation\)/ { current_line = NR }
+  in_success && /recoveryAttempt = 0/ { reset_line = NR }
+  /private func claimEncoderOutputFailure/ {
+    exit !(lock_line && once_line && guard_line && async_line && current_line && reset_line &&
+           lock_line < once_line && once_line < guard_line && guard_line < async_line &&
+           async_line < current_line && current_line < reset_line)
+  }
+' "$source"
 grep -q 'automaticallyAdjustsVideoHDREnabled = false' "$source"
 grep -q 'isVideoHDREnabled = false' "$source"
 grep -q 'let matching4K60Formats = device.formats.filter' "$source"

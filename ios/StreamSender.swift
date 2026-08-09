@@ -29,6 +29,10 @@ final class StreamSender {
     private let maxQueuedPackets = 8
     private var pendingPackets: [Data] = []
     private var sendInFlight = false
+    // Network.framework may complete a send that was submitted before a
+    // transient `.waiting` state. Fence those completions so they cannot make
+    // recovered health/counters look active before a fresh keyframe is sent.
+    private var sendGeneration: UInt64 = 0
     private var connectionReady = false
     private var waitingForKeyFrame = true
     private var sentFrameCount: UInt64 = 0
@@ -169,11 +173,14 @@ final class StreamSender {
                     case .ready:
                         self.connectionReady = true
                         self.waitingForKeyFrame = true
+                        self.sentFrameCount = 0
+                        self.droppedFrameCount = 0
+                        self.sentFrameStart = ProcessInfo.processInfo.systemUptime
                         self.publishConnectionState(.connected)
                         self.onClientConnected?()
                         self.report("PC connected • starting video")
                     case .waiting(let error):
-                        self.publishConnectionState(.waiting)
+                        self.pauseForConnectionWaiting()
                         self.report("PC connection waiting: \(error.localizedDescription)")
                     case .failed(let error):
                         self.connectionReady = false
@@ -270,14 +277,31 @@ final class StreamSender {
         onConnectionState?(state)
     }
 
+    private func pauseForConnectionWaiting() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        connectionReady = false
+        pendingPackets.removeAll(keepingCapacity: true)
+        waitingForKeyFrame = true
+        sendGeneration &+= 1
+        publishConnectionState(.waiting)
+    }
+
     private func pumpSend(connection: NWConnection) {
-        guard !sendInFlight, !pendingPackets.isEmpty else { return }
+        guard connectionReady, !sendInFlight, !pendingPackets.isEmpty else { return }
         let packet = pendingPackets.removeFirst()
         sendInFlight = true
+        let generation = sendGeneration
         connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
             self?.queue.async {
                 guard let self, let connection, self.connection === connection else { return }
                 self.sendInFlight = false
+                guard generation == self.sendGeneration else {
+                    // This completion belongs to the pre-wait transport state,
+                    // including any error it carries. Resume only with the
+                    // queued fresh IDR on the current connection generation.
+                    self.pumpSend(connection: connection)
+                    return
+                }
                 if let error {
                     self.report("Video send failed: \(error.localizedDescription)")
                     self.connectionReady = false

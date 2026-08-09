@@ -18,6 +18,8 @@
 #include <iphlpapi.h>
 
 #include "gpu_frame_publisher.h"
+#include "hevc_access_unit.h"
+#include "relay_recovery.h"
 #include "relay_timestamp.h"
 
 #include "stream_protocol.h"   // from ../protocol
@@ -54,11 +56,22 @@ public:
 
     ~ObsUdpRelay() { Close(); }
 
-    bool Open() {
+    void BeginSession() {
+        timestamp_clock_.BeginSession();
+    }
+
+    bool Open(bool isRecovery) {
+        // Every open starts from a fully released FFmpeg context. This also
+        // makes a failed recovery attempt safe to retry on a later IDR.
+        Close(false);
         int status = avformat_alloc_output_context2(&context_, nullptr, "mpegts", kUrl);
         if (status < 0 || !context_) return Report("avformat_alloc_output_context2", status);
         stream_ = avformat_new_stream(context_, nullptr);
-        if (!stream_) return Report("avformat_new_stream", AVERROR(ENOMEM));
+        if (!stream_) {
+            const bool reported = Report("avformat_new_stream", AVERROR(ENOMEM));
+            Close(false);
+            return reported;
+        }
         stream_->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
         stream_->codecpar->codec_id = AV_CODEC_ID_HEVC;
         stream_->codecpar->width = 3840;
@@ -69,14 +82,23 @@ public:
         av_dict_set(&options, "muxdelay", "0", 0);
         av_dict_set(&options, "muxpreload", "0", 0);
         av_dict_set(&options, "flush_packets", "1", 0);
+        if (isRecovery) {
+            av_dict_set(&options, "mpegts_flags", "+initial_discontinuity", 0);
+        }
         status = avio_open2(&context_->pb, kUrl, AVIO_FLAG_WRITE, nullptr, nullptr);
         if (status < 0) {
             av_dict_free(&options);
-            return Report("avio_open2", status);
+            const bool reported = Report("avio_open2", status);
+            Close(false);
+            return reported;
         }
         status = avformat_write_header(context_, &options);
         av_dict_free(&options);
-        if (status < 0) return Report("avformat_write_header", status);
+        if (status < 0) {
+            const bool reported = Report("avformat_write_header", status);
+            Close(false);
+            return reported;
+        }
         header_written_ = true;
         muxer_time_base_ = stream_->time_base;
         printf("INFO: OBS relay ready; Media Source input=%s format=mpegts tb=%d/%d\n",
@@ -84,12 +106,31 @@ public:
         return true;
     }
 
-    bool Write(const AVPacket& source, uint64_t timestampUs, bool isKeyframe) {
+    bool Write(const AVPacket& source, uint64_t timestampUs,
+               const HevcAccessUnitInfo& accessUnit) {
+        bool reopenedForThisWrite = false;
+        const RelayRecoveryAction action = recovery_gate_.BeforeWrite(
+            accessUnit.IsDecoderJoinPoint());
+        if (action == RelayRecoveryAction::Drop) return false;
+        if (action == RelayRecoveryAction::ReopenAndWrite) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now < next_reopen_attempt_) return false;
+            if (!Open(true)) {
+                recovery_gate_.OnReopenFailure();
+                next_reopen_attempt_ = now + std::chrono::seconds(1);
+                return false;
+            }
+            recovery_gate_.OnReopenSuccess();
+            reopenedForThisWrite = true;
+        }
         if (!context_ || !stream_) return false;
         const uint64_t relativeUs = timestamp_clock_.Rebase(timestampUs);
         AVPacket* packet = av_packet_alloc();
         if (!packet || av_packet_ref(packet, &source) < 0) {
             av_packet_free(&packet);
+            if (reopenedForThisWrite) {
+                next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            }
             return false;
         }
         packet->stream_index = stream_->index;
@@ -100,10 +141,31 @@ public:
         packet->dts = packet->pts;
         last_mux_pts_ = packet->pts;
         packet->duration = av_rescale_q(16'667, AVRational{1, 1'000'000}, muxer_time_base_);
-        if (isKeyframe) packet->flags |= AV_PKT_FLAG_KEY;
+        if (accessUnit.hasIdr) packet->flags |= AV_PKT_FLAG_KEY;
         const int status = av_interleaved_write_frame(context_, packet);
         av_packet_free(&packet);
-        return status >= 0 || ReportWriteFailure(status);
+        if (status >= 0) {
+            recovery_gate_.OnWriteSuccess();
+            if (reopenedForThisWrite) {
+                printf("INFO: OBS relay recovered on fresh HEVC decoder-join AU\n");
+            }
+            return true;
+        }
+        if (reopenedForThisWrite) {
+            next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
+        if (recovery_gate_.OnWriteFailure()) {
+            fprintf(stderr,
+                    "WARN: OBS relay write failed %u consecutive times; "
+                    "waiting for HEVC decoder-join AU to reopen\n",
+                    RelayRecoveryGate::kConsecutiveFailureThreshold);
+            Close(false);
+            if (!reopenedForThisWrite) {
+                next_reopen_attempt_ = std::chrono::steady_clock::now();
+            }
+            return false;
+        }
+        return ReportWriteFailure(status);
     }
 
 private:
@@ -123,9 +185,9 @@ private:
         return false;
     }
 
-    void Close() noexcept {
+    void Close(bool writeTrailer = true) noexcept {
         if (!context_) return;
-        if (header_written_ && context_->pb) {
+        if (writeTrailer && header_written_ && context_->pb) {
             av_write_trailer(context_);
         }
         if (context_->pb) {
@@ -142,8 +204,10 @@ private:
     bool header_written_ = false;
     AVRational muxer_time_base_{1, 90'000};
     RelayTimestampClock timestamp_clock_{};
+    RelayRecoveryGate recovery_gate_{};
     int64_t last_mux_pts_ = AV_NOPTS_VALUE;
     std::chrono::steady_clock::time_point next_write_error_log_{};
+    std::chrono::steady_clock::time_point next_reopen_attempt_{};
 };
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
@@ -413,25 +477,6 @@ static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
     return ctx;
 }
 
-// An Annex-B HEVC connection can start at any packet boundary. VPS/SPS/PPS by
-// themselves are not enough. Require IDR (NAL 19/20), not CRA/BLA: only IDR
-// guarantees a decoder joining mid-stream needs no earlier reference picture.
-static bool contains_hevc_idr(const uint8_t* data, size_t size) {
-    for (size_t i = 0; i + 4 < size; ++i) {
-        size_t prefix = 0;
-        if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) prefix = 3;
-        else if (i + 5 < size && data[i] == 0 && data[i + 1] == 0 &&
-                 data[i + 2] == 0 && data[i + 3] == 1) prefix = 4;
-        if (!prefix) continue;
-        const size_t nal = i + prefix;
-        if (nal >= size) return false;
-        const uint8_t nal_type = (data[nal] >> 1) & 0x3f;
-        if (nal_type == 19 || nal_type == 20) return true;
-        i = nal;
-    }
-    return false;
-}
-
 static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &decoded,
                          DecodeTelemetry &telemetry, GpuFramePublisher &publisher,
                          uint64_t fallback_timestamp_us) {
@@ -472,14 +517,14 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
     }
 }
 
-static void receive_session(SOCKET fd, bool obsUdpRelay) {
+static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
+    const bool obsUdpRelay = relay != nullptr;
     // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
     FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     DecodeTelemetry decodeTelemetry{};
     GpuFramePublisher gpuPublisher{};
     AVCodecContext *dec = obsUdpRelay ? nullptr : init_decoder(decodeTelemetry);
-    ObsUdpRelay relay;
-    if (obsUdpRelay && !relay.Open()) return;
+    if (relay) relay->BeginSession();
     AVPacket *packet = av_packet_alloc();
     AVFrame *decodedFrame = av_frame_alloc();
     if (!packet || !decodedFrame) {
@@ -522,12 +567,15 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
         }
         packet->pts = static_cast<int64_t>(h.timestamp_us);
         packet->dts = packet->pts;
+        const HevcAccessUnitInfo accessUnit = InspectHevcAccessUnit(packet->data, h.frame_size);
 
         if (waitingForRandomAccess) {
-            if (!contains_hevc_idr(packet->data, h.frame_size)) {
+            if (!accessUnit.IsDecoderJoinPoint()) {
                 ++skippedUntilRandomAccess;
                 if (skippedUntilRandomAccess == 1 || skippedUntilRandomAccess % 60 == 0) {
-                    fprintf(stderr, "INFO: waiting for HEVC IDR; skipped %llu delta frames\n",
+                    fprintf(stderr,
+                            "INFO: waiting for HEVC VPS/SPS/PPS+IDR join AU; "
+                            "skipped %llu frames\n",
                             static_cast<unsigned long long>(skippedUntilRandomAccess));
                 }
                 av_packet_unref(packet);
@@ -535,7 +583,7 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
             }
             if (dec) avcodec_flush_buffers(dec);
             waitingForRandomAccess = false;
-            printf("INFO: HEVC IDR frame received after %llu skipped frames\n",
+            printf("INFO: HEVC decoder-join AU received after %llu skipped frames\n",
                    static_cast<unsigned long long>(skippedUntilRandomAccess));
         }
 
@@ -557,8 +605,7 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
         frames++;
 
         if (obsUdpRelay) {
-            const bool isKeyframe = contains_hevc_idr(packet->data, h.frame_size);
-            if (!relay.Write(*packet, h.timestamp_us, isKeyframe)) {
+            if (!relay->Write(*packet, h.timestamp_us, accessUnit)) {
                 ++relayWriteFailures;
             }
         }
@@ -608,6 +655,26 @@ static void receive_session(SOCKET fd, bool obsUdpRelay) {
            static_cast<unsigned long long>(frames));
 }
 
+static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost) {
+    // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
+    // transport-stream continuity counters and the OBS-facing timestamp domain.
+    // This helper also guarantees the relay closes while Winsock is still live.
+    ObsUdpRelay relay;
+    if (obsUdpRelay && !relay.Open(false)) return 1;
+
+    for (;;) {
+        const SOCKET fd = connect_to_device(usbNetworkHost.c_str());
+        if (fd != INVALID_SOCKET) {
+            receive_session(fd, obsUdpRelay ? &relay : nullptr);
+            closesocket(fd);
+            fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
+        } else {
+            fprintf(stderr, "INFO: retrying iPhone connection in 1 second\n");
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+}
+
 int main(int argc, char** argv) {
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
@@ -643,15 +710,7 @@ int main(int argc, char** argv) {
            obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
     printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
            usbNetworkHost.c_str(), DEVICE_PORT);
-    for (;;) {
-        const SOCKET fd = connect_to_device(usbNetworkHost.c_str());
-        if (fd != INVALID_SOCKET) {
-            receive_session(fd, obsUdpRelay);
-            closesocket(fd);
-            fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
-        } else {
-            fprintf(stderr, "INFO: retrying iPhone connection in 1 second\n");
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost);
+    WSACleanup();
+    return receiverStatus;
 }

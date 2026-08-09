@@ -22,3 +22,41 @@ grep -q 'listenerRetryAttempt' "$sender"
 grep -q 'NWPathMonitor' "$sender"
 grep -q 'func restartListening' "$sender"
 grep -q 'USB network path changed' "$sender"
+
+# A transient Network.framework wait is a transport discontinuity: stop frame
+# admission, discard queued delta frames, and require a fresh random-access
+# frame when the same connection becomes ready again.
+waiting_handler=$(awk '
+  /private func pauseForConnectionWaiting\(\)/ { in_handler = 1 }
+  in_handler { print }
+  in_handler && /^    }$/ { exit }
+' "$sender")
+printf '%s\n' "$waiting_handler" | grep -q 'connectionReady = false'
+printf '%s\n' "$waiting_handler" | grep -q 'pendingPackets.removeAll'
+printf '%s\n' "$waiting_handler" | grep -q 'waitingForKeyFrame = true'
+printf '%s\n' "$waiting_handler" | grep -q 'sendGeneration &+= 1'
+printf '%s\n' "$waiting_handler" | grep -q 'publishConnectionState(.waiting)'
+grep -q 'case .waiting(let error):' "$sender"
+grep -q 'self.pauseForConnectionWaiting()' "$sender"
+
+# A completion submitted before the wait must not publish sending health or
+# advance counters after recovery. The generation check fences it out while
+# allowing the one physical Network.framework send to finish in order.
+grep -q 'let generation = sendGeneration' "$sender"
+grep -q 'guard generation == self.sendGeneration else' "$sender"
+grep -q 'guard connectionReady, !sendInFlight' "$sender"
+
+# Once `.waiting` invalidates a send generation, its delayed completion is
+# stale even if Network.framework attaches an error. Fence it before the
+# current-generation failure path, otherwise recovery can cancel a healthy
+# connection instead of draining the queued fresh IDR.
+awk '
+  /private func pumpSend\(connection: NWConnection\)/ { in_pump = 1 }
+  in_pump && /self\.sendInFlight = false/ && !reset_line { reset_line = NR }
+  in_pump && /guard generation == self\.sendGeneration else/ && !generation_line { generation_line = NR }
+  in_pump && /if let error/ && !error_line { error_line = NR }
+  END {
+    exit !(reset_line && generation_line && error_line &&
+           reset_line < generation_line && generation_line < error_line)
+  }
+' "$sender"
