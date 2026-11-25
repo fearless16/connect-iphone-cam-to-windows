@@ -22,6 +22,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Select newest Xcode 26
+        run: |
+          xc=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$xc" ]; then sudo xcode-select -s "$xc"; fi
+
+      - name: Require iOS 26 SDK
+        run: |
+          xcodebuild -version
+          sdk=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iphoneos SDK $sdk"
+          [ "${sdk%%.*}" -ge 26 ] || { echo "iOS SDK $sdk is older than 26"; exit 1; }
+
+      - name: Print camera API names from the SDK (used by T5.9 and T5.10)
+        run: |
+          h="$(xcrun --sdk iphoneos --show-sdk-path)/System/Library/Frameworks/AVFoundation.framework/Headers"
+          grep -ho 'NSCamera[A-Za-z]*' "$h"/*.h | sort -u || true
+          grep -hn 'Cinematic\|imulatedAperture\|PortraitEffect' "$h"/*.h | head -120 || true
+
       - name: Test length-prefixed HEVC conversion
         run: |
           xcrun swiftc -swift-version 5 \
@@ -134,6 +152,7 @@ jobs:
           sh tests/architecture_boundary_contract.sh
           sh tests/protocol_parity_contract.sh
           sh tests/test_registry_contract.sh .github/workflows/build.yml scripts/check.sh
+          sh tests/ios_ci_contract.sh .github/workflows/build.yml
 
       - name: Build receiver.exe and portable contract tests
         run: |
