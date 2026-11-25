@@ -57,3 +57,8 @@ awk '
 # stale callbacks before each main-thread update.
 grep -q 'streamer.onStreamHealth' "$view_controller"
 grep -q 'DispatchQueue.main.async' "$streamer"
+
+# T5.2: the capability report is a read-only, button-triggered probe. The
+# view controller asks CameraStreamer for it and never touches StreamSender.
+grep -q 'func capabilityReport(completion:' "$streamer"
+grep -q 'streamer.capabilityReport' "$view_controller"
