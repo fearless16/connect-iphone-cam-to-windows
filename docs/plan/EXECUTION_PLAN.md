@@ -357,7 +357,7 @@ AC2: host `sh scripts/check.sh` still shows 0 FAIL.
 uses placeholder paths (D7). The e2e tests need a local `receiver.exe`.
 **Steps:**
 1. Create `scripts/build_receiver_msys2.sh`. It must:
-   - exit with a message unless `"$MSYSTEM" = MINGW64`;
+   - exit with a message unless `"$MSYSTEM" = UCRT64`;
    - `cd` to the repo root and `mkdir -p build/windows-binaries`;
    - compile and run the 4 C++ tests with the **exact** `g++` lines from
      `build.yml`, outputting to `build/`;
@@ -367,9 +367,9 @@ uses placeholder paths (D7). The e2e tests need a local `receiver.exe`.
    - copy DLLs the same way CI does:
      `ldd … | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" build/windows-binaries/`.
 2. In `docs/QUICKSTART.md` Part B, add "Option 1 (recommended): build exactly like
-   CI with MSYS2". Steps: install MSYS2 from msys2.org, open the **MSYS2 MINGW64**
-   shell, run `pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-ffmpeg
-   mingw-w64-x86_64-libusbmuxd mingw-w64-x86_64-python mingw-w64-x86_64-pkgconf git`,
+   CI with MSYS2". Steps: install MSYS2 from msys2.org, open the **MSYS2 UCRT64**
+   shell, run `pacman -S --needed mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-ffmpeg
+   mingw-w64-ucrt-x86_64-libusbmuxd mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-pkgconf git`,
    then `sh scripts/build_receiver_msys2.sh`. Label the existing Visual Studio and
    vcpkg steps "Option 2".
 3. In `docs/ENGINEERING_RULES.md`, change D7's "Smallest correction" to "Use
@@ -524,7 +524,7 @@ correctly with no iPhone, and it's the base for the fault and latency tests.
    exists, run `run "receiver e2e" sh tests/receiver_e2e_test.sh "$exe" "steady"`.
    Otherwise `skip "tests/receiver_e2e_test.sh" "receiver.exe not built (sh scripts/build_receiver_msys2.sh)"`.
    On other systems, skip with "needs Windows (CI windows job runs it)".
-6. **CI (windows job)**: add `mingw-w64-x86_64-python` to the msys2 `install:`
+6. **CI (windows job)**: add `mingw-w64-ucrt-x86_64-python` to the msys2 `install:`
    list. After the step that fills `windows-binaries/`, add:
    ```yaml
    - name: Receiver end-to-end tests (fake iPhone -> receiver.exe -> UDP sink)
