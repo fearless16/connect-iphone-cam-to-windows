@@ -134,7 +134,7 @@ Do not copy these patterns. Fix them only when that is the task.
 | D4 | iOS `NWListener` accepts on every interface, unauthenticated, and the newest connection replaces the current one | Human decision. For example, require the wired interface |
 | D5 | ~~The sender accepted frames up to `UInt32.max`, but the receiver rejects anything over 16 MiB~~ | Fixed by T1.7: `StreamSender.send` guards `StreamHeader.maxFrameSize` and requests a keyframe |
 | D6 | Source contracts are grep-based: they pin names and strings, not behavior | Prefer runtime tests for logic you can extract |
-| D7 | `scripts/build_*.sh` contain placeholder paths and are not used by CI | Treat CI as the build reference |
+| D7 | `scripts/build_*.sh` contain placeholder paths and are not used by CI | Use `scripts/build_receiver_msys2.sh` (mirrors CI) |
 | D8 | `receiver.cpp` mixes discovery, transport, relay, and decode | Extract `ObsUdpRelay` only when changing it |
 | D9 | No clang-format, SwiftLint, or `-Wall` in CI. Style is review-enforced | Human decision (reformat churn) |
 | D10 | `gpu_frame_transport_contract_test.cpp` is archived, but `--gpu-ring` writes that layout | Wire it into CI if `--gpu-ring` gains support |

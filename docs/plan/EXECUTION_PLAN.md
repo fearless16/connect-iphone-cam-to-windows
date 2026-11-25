@@ -1254,7 +1254,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T0.0 | main (owner) | — | — | — | DONE | 2026-11-25 | committed on main locally (not pushed) |
 | T0.1 | ci/run-on-pull-requests | H | T0.0 | — | DONE | 2026-11-25 | Merged to main locally; first PR run confirms trigger |
 | T0.2 | chore/docker-check-gate | H | T0.0 | G2 | TODO | | |
-| T0.3 | chore/msys2-local-build | H | T0.0 | — | TODO | | |
+| T0.3 | chore/msys2-local-build | H | T0.0 | — | DONE-PENDING-MERGE | 2026-11-25 | script UNVERIFIED: no MSYS2 g++ on this PC; owner runs it once |
 | T0.4 | feat/receiver-host-flag | S | T0.0 | — | TODO | | |
 | T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | TODO | | |
 | T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | TODO | | |
