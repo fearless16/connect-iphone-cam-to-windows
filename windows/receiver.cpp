@@ -22,6 +22,7 @@
 #include "hevc_access_unit.h"
 #include "relay_recovery.h"
 #include "relay_timestamp.h"
+#include "stream_timing.h"
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -47,6 +48,10 @@ struct DecodeTelemetry {
     uint64_t software_frames = 0;
     uint64_t gpu_backpressure_drops = 0;
 };
+
+// Outcome of one relay write. Gate drops are intentional (waiting for a
+// decoder-join AU after a failure) and are counted apart from real failures.
+enum class RelayWriteResult { Written, GateDrop, Failed };
 
 // OBS Media Source officially accepts MPEG-TS over UDP.  This relay keeps
 // iPhone HEVC compressed until it reaches OBS; no frame is mapped or copied on
@@ -107,24 +112,24 @@ public:
         return true;
     }
 
-    bool Write(const AVPacket& source, uint64_t timestampUs,
-               const HevcAccessUnitInfo& accessUnit) {
+    RelayWriteResult Write(const AVPacket& source, uint64_t timestampUs,
+                           const HevcAccessUnitInfo& accessUnit) {
         bool reopenedForThisWrite = false;
         const RelayRecoveryAction action = recovery_gate_.BeforeWrite(
             accessUnit.IsDecoderJoinPoint());
-        if (action == RelayRecoveryAction::Drop) return false;
+        if (action == RelayRecoveryAction::Drop) return RelayWriteResult::GateDrop;
         if (action == RelayRecoveryAction::ReopenAndWrite) {
             const auto now = std::chrono::steady_clock::now();
-            if (now < next_reopen_attempt_) return false;
+            if (now < next_reopen_attempt_) return RelayWriteResult::GateDrop;
             if (!Open(true)) {
                 recovery_gate_.OnReopenFailure();
                 next_reopen_attempt_ = now + std::chrono::seconds(1);
-                return false;
+                return RelayWriteResult::Failed;
             }
             recovery_gate_.OnReopenSuccess();
             reopenedForThisWrite = true;
         }
-        if (!context_ || !stream_) return false;
+        if (!context_ || !stream_) return RelayWriteResult::Failed;
         const uint64_t relativeUs = timestamp_clock_.Rebase(timestampUs);
         AVPacket* packet = av_packet_alloc();
         if (!packet || av_packet_ref(packet, &source) < 0) {
@@ -132,7 +137,7 @@ public:
             if (reopenedForThisWrite) {
                 next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             }
-            return false;
+            return RelayWriteResult::Failed;
         }
         packet->stream_index = stream_->index;
         const int64_t candidatePts = av_rescale_q(static_cast<int64_t>(relativeUs),
@@ -150,7 +155,7 @@ public:
             if (reopenedForThisWrite) {
                 printf("INFO: OBS relay recovered on fresh HEVC decoder-join AU\n");
             }
-            return true;
+            return RelayWriteResult::Written;
         }
         if (reopenedForThisWrite) {
             next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -164,9 +169,10 @@ public:
             if (!reopenedForThisWrite) {
                 next_reopen_attempt_ = std::chrono::steady_clock::now();
             }
-            return false;
+            return RelayWriteResult::Failed;
         }
-        return ReportWriteFailure(status);
+        ReportWriteFailure(status);
+        return RelayWriteResult::Failed;
     }
 
 private:
@@ -539,6 +545,8 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     GpuFramePublisher gpuPublisher{};
     AVCodecContext *dec = obsUdpRelay ? nullptr : init_decoder(decodeTelemetry);
     if (relay) relay->BeginSession();
+    StreamTimingStats timing;
+    timing.BeginSession();
     AVPacket *packet = av_packet_alloc();
     AVFrame *decodedFrame = av_frame_alloc();
     if (!packet || !decodedFrame) {
@@ -552,7 +560,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
 
     std::vector<uint8_t> hdr(STREAM_HEADER_SIZE);
     uint64_t frames = 0, decoded = 0;
-    uint64_t skippedUntilRandomAccess = 0, relayWriteFailures = 0;
+    uint64_t skippedUntilRandomAccess = 0, relayWriteFailures = 0, relayGateDrops = 0;
     bool waitingForRandomAccess = true;
     uint64_t firstTimestampUs = 0, previousTimestampUs = 0, sourceGapFrames = 0;
     auto t0 = std::chrono::steady_clock::now();
@@ -579,6 +587,10 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             av_packet_unref(packet);
             break;
         }
+        const uint64_t arrivalUs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        timing.OnFrame(h.timestamp_us, arrivalUs);
         packet->pts = static_cast<int64_t>(h.timestamp_us);
         packet->dts = packet->pts;
         const HevcAccessUnitInfo accessUnit = InspectHevcAccessUnit(packet->data, h.frame_size);
@@ -619,8 +631,11 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         frames++;
 
         if (obsUdpRelay) {
-            if (!relay->Write(*packet, h.timestamp_us, accessUnit)) {
+            const RelayWriteResult written = relay->Write(*packet, h.timestamp_us, accessUnit);
+            if (written == RelayWriteResult::Failed) {
                 ++relayWriteFailures;
+            } else if (written == RelayWriteResult::GateDrop) {
+                ++relayGateDrops;
             }
         }
 
@@ -649,15 +664,23 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
                 ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
             const double sourceFps = sourceSeconds > 0
                 ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
-            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu mode=%s frames\n",
+            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu relayGateDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu "
+                   "extraDelayMs=%.1f maxExtraMs=%.1f maxGapMs=%.1f burst=%u skewMs=%.1f mode=%s frames\n",
                    frames / s, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
                    static_cast<unsigned long long>(relayWriteFailures),
+                   static_cast<unsigned long long>(relayGateDrops),
                    static_cast<unsigned long long>(decoded),
                    static_cast<unsigned long long>(decodeTelemetry.d3d11_frames),
                    static_cast<unsigned long long>(decodeTelemetry.software_frames),
                    static_cast<unsigned long long>(decodeTelemetry.gpu_backpressure_drops),
+                   timing.ExtraDelayUs() / 1000.0,
+                   timing.WindowMaxExtraDelayUs() / 1000.0,
+                   timing.MaxArrivalGapUs() / 1000.0,
+                   static_cast<unsigned>(timing.BurstFrames()),
+                   timing.SkewUs() / 1000.0,
                    obsUdpRelay ? "OBS_UDP_HEVC" : "GPU_RING");
+            timing.ResetWindow();
         }
     }
 

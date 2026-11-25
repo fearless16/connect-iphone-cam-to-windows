@@ -34,6 +34,11 @@ g++ -std=c++20 -O2 \
   -o build/hevc_access_unit_test.exe
 ./build/hevc_access_unit_test.exe
 g++ -std=c++20 -O2 \
+  -I"$root/windows" \
+  "$root/tests/stream_timing_test.cpp" \
+  -o build/stream_timing_test.exe
+./build/stream_timing_test.exe
+g++ -std=c++20 -O2 \
   -I"$root/protocol" \
   "$root/windows/receiver.cpp" \
   "$root/windows/gpu_frame_publisher.cpp" \
