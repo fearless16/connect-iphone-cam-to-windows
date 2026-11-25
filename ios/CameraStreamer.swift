@@ -23,6 +23,35 @@ enum OutputOrientation: String {
     var rotationAngle: CGFloat { self == .portrait ? 90 : 0 }
 }
 
+/// Output quality presets, all 60 fps (gate G8 prime). The chosen preset sets the
+/// capture format and the encoder bit rate; it never changes the wire format.
+enum StreamPreset: String, CaseIterable {
+    case p720 = "720p60"
+    case p1080 = "1080p60"
+    case p2160 = "4K60"
+
+    static let preferenceKey = "stream.preset"
+    static var stored: StreamPreset {
+        guard let value = UserDefaults.standard.string(forKey: preferenceKey),
+              let preset = StreamPreset(rawValue: value) else { return .p2160 }
+        return preset
+    }
+
+    var width: Int { switch self { case .p720: return 1280; case .p1080: return 1920; case .p2160: return 3840 } }
+    var height: Int { switch self { case .p720: return 720; case .p1080: return 1080; case .p2160: return 2160 } }
+    var frameRate: Int { 60 }
+    var title: String { switch self { case .p720: return "720p"; case .p1080: return "1080p"; case .p2160: return "4K" } }
+
+    /// Average bit rates in bits per second (gate G8 prime). Peak = average / 4 bytes per 1 s.
+    var bitRates: (usb: Int, wifi: Int) {
+        switch self {
+        case .p720: return (usb: 10_000_000, wifi: 8_000_000)
+        case .p1080: return (usb: 20_000_000, wifi: 15_000_000)
+        case .p2160: return (usb: 40_000_000, wifi: 25_000_000)
+        }
+    }
+}
+
 /// Steps 1-4 only: 4K60 capture -> hardware HEVC (Annex-B) -> file.
 /// No UI, no network, no segmentation. Run on device with Developer Mode on.
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -33,8 +62,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var onStatus: ((String) -> Void)?
     private var encoder: VTCompressionSession?
     private var encoderSetupFailed = false
-    private var reportedNon4KFrame = false
+    private var reportedUnexpectedFrameSize = false
     private let encoderStateLock = NSLock()
+    // Protected by encoderStateLock: the chosen preset, whether the PC is
+    // connected over Wi-Fi, and whether a live bit rate failure was reported.
+    private var activePreset = StreamPreset.stored
+    private var linkIsWiFi = false
+    private var bitRateFailureReported = false
     private var forceNextKeyFrame = false
     private var isConfigured = false
     private var stopped = false
@@ -69,7 +103,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var recoveryBackoffResetGeneration: UInt64 = 0
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
     private let telemetryLock = NSLock()
-    private var activeFormatTelemetry = "Waiting for 4K60 format"
+    private var activeFormatTelemetry = "Waiting for camera format"
     private var sensorFirstPTS = CMTime.invalid
     private var encoderFirstPTS = CMTime.invalid
     private var sensorFrameCount: UInt64 = 0
@@ -165,7 +199,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func start() {
         beginStreamHealth()
         updateStreamHealth(camera: "CAMERA starting • requesting access",
-                           event: "Preparing 4K60 camera")
+                           event: "Preparing \(StreamPreset.stored.rawValue) camera")
         guard AVCaptureDevice.authorizationStatus(for: .video) != .denied else {
             updateStreamHealth(camera: "CAMERA error • permission denied",
                                event: "Camera permission denied")
@@ -257,9 +291,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         // Input attachment resets the format and duration. Apply them after
         // attachment, within this configuration transaction.
-        guard apply4K60Format(to: device) else {
-            updateStreamHealth(camera: "CAMERA error • 4K60 unavailable",
-                               event: "4K60 camera configuration failed")
+        let preset = currentPreset()
+        guard applyFormat(preset, to: device) else {
+            updateStreamHealth(camera: "CAMERA error • \(preset.rawValue) unavailable",
+                               event: "\(preset.rawValue) camera configuration failed")
             session.commitConfiguration()
             return
         }
@@ -270,7 +305,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         isConfigured = true
         stopped = false
         invalidateEncoder(reason: nil)
-        reportedNon4KFrame = false
+        reportedUnexpectedFrameSize = false
         session.startRunning()
         setIdleTimerDisabled(true)
         refreshActiveFormatTelemetry(device)
@@ -286,6 +321,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.onClientConnected = { [weak self] in
             self?.requestKeyFrame()
         }
+        sender.onClientTransport = { [weak self] overWiFi in self?.setLinkIsWiFi(overWiFi) }
         sender.onKeyFrameNeeded = { [weak self] in self?.requestKeyFrame() }
         sender.onDisconnect = { [weak self] reason in
             self?.recordLinkDrop(reason: reason)
@@ -316,10 +352,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         frameStartUptime = ProcessInfo.processInfo.systemUptime
         publishDiagnostics()
         publishOutputOrientation(initialOrientation)
-        updateStreamHealth(camera: "CAMERA running • waiting for first 4K frame",
+        updateStreamHealth(camera: "CAMERA running • waiting for first frame",
                            usb: "USB waiting for Windows receiver",
                            event: "Camera started • screen kept awake")
         report("Camera active • screen kept awake • waiting for PC")
+        publishPresetAvailability(for: device)
     }
 
     /// Read-only device probe for the owner's capability report. It runs only
@@ -405,6 +442,97 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    // MARK: - T5.4 quality presets (gate G8 prime)
+    /// The preset in use changed (or a requested change was refused). Main queue.
+    var onPresetChanged: ((StreamPreset) -> Void)?
+    /// Presets this iPhone has a matching capture format for. Main queue.
+    var onPresetAvailability: (([StreamPreset]) -> Void)?
+
+    private func currentPreset() -> StreamPreset {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return activePreset
+    }
+
+    private func currentBitRate() -> Int {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return linkIsWiFi ? activePreset.bitRates.wifi : activePreset.bitRates.usb
+    }
+
+    private func setLinkIsWiFi(_ overWiFi: Bool) {
+        encoderStateLock.lock()
+        let changed = linkIsWiFi != overWiFi
+        linkIsWiFi = overWiFi
+        encoderStateLock.unlock()
+        if changed { applyLiveBitRate() }
+    }
+
+    /// Applies the current target rate to the running encoder. A failure is
+    /// reported once and is not fatal: the encoder keeps its previous rate.
+    private func applyLiveBitRate() {
+        guard let encoder = activeEncoder()?.session else { return }
+        let target = currentBitRate()
+        let rateLimit: CFArray = [NSNumber(value: target / 4), NSNumber(value: 1)] as CFArray
+        let statuses = [
+            VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: target)),
+            VTSessionSetProperty(encoder, key: kVTCompressionPropertyKey_DataRateLimits, value: rateLimit),
+        ]
+        guard let failed = statuses.first(where: { $0 != noErr }) else { return }
+        encoderStateLock.lock()
+        let firstFailure = !bitRateFailureReported
+        bitRateFailureReported = true
+        encoderStateLock.unlock()
+        if firstFailure { report("Bit rate change failed: \(failed)") }
+    }
+
+    /// Switches the capture format and encoder to `preset` without touching the
+    /// PC connection: the receiver sees a new VPS/SPS/PPS + IDR and follows the
+    /// size. Never call restartListening here.
+    func setPreset(_ preset: StreamPreset) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.isConfigured, !self.stopped, let device = self.videoDevice else {
+                self.publishPreset(self.currentPreset())
+                return
+            }
+            self.session.beginConfiguration()
+            let applied = self.applyFormat(preset, to: device)
+            if applied {
+                // Set before the commit so the first frames of the new size are
+                // not mistaken for a wrong-size camera.
+                self.encoderStateLock.lock()
+                self.activePreset = preset
+                self.encoderStateLock.unlock()
+            }
+            self.session.commitConfiguration()
+            guard applied else {
+                self.report("\(preset.rawValue) unavailable • keeping \(self.currentPreset().rawValue)")
+                self.publishPreset(self.currentPreset())
+                return
+            }
+            UserDefaults.standard.set(preset.rawValue, forKey: StreamPreset.preferenceKey)
+            self.invalidateEncoder(reason: nil)
+            self.sender.resetForDiscontinuity(reason: "Preset \(preset.rawValue)")
+            self.refreshActiveFormatTelemetry(device)
+            self.publishPreset(preset)
+        }
+    }
+
+    private func publishPreset(_ preset: StreamPreset) {
+        DispatchQueue.main.async { [weak self] in self?.onPresetChanged?(preset) }
+    }
+
+    private func publishPresetAvailability(for device: AVCaptureDevice) {
+        let available = StreamPreset.allCases.filter { preset in
+            device.formats.contains { Self.format($0, supports: preset) }
+        }
+        for preset in StreamPreset.allCases where !available.contains(preset) {
+            report("\(preset.title) not supported on this iPhone")
+        }
+        DispatchQueue.main.async { [weak self] in self?.onPresetAvailability?(available) }
+    }
+
     // T3.1: Wi-Fi streaming is opt-in and off by default (G7 option A).
     static let wifiPreferenceKey = "stream.wifiEnabled"
 
@@ -456,6 +584,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     // MARK: - Step 4: VideoToolbox hardware HEVC encoder
     private func createEncoder(width: Int, height: Int) {
+        let target = currentBitRate()
         let generation = reserveEncoderGeneration()
         let imageBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
@@ -500,14 +629,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
         }
-        let rateLimit: CFArray = [NSNumber(value: 10_000_000), NSNumber(value: 1)] as CFArray
+        let rateLimit: CFArray = [NSNumber(value: target / 4), NSNumber(value: 1)] as CFArray
         let propertyStatuses: [(String, OSStatus)] = [
             ("real-time", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)),
             ("frame reordering", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)),
             ("HEVC profile", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)),
-            ("bitrate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: 40_000_000))),
+            ("bitrate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: target))),
             ("rate limit", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_DataRateLimits, value: rateLimit)),
-            ("frame rate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: 60))),
+            ("frame rate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: currentPreset().frameRate))),
             ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 120))),
         ]
         if let failed = propertyStatuses.first(where: { $0.1 != noErr }) {
@@ -538,10 +667,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         guard let px = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let width = CVPixelBufferGetWidth(px)
         let height = CVPixelBufferGetHeight(px)
-        guard is4KFrame(width: width, height: height) else {
-            if !reportedNon4KFrame {
-                reportedNon4KFrame = true
-                report("Camera delivered \(width)x\(height), not 4K")
+        guard isPresetFrame(width: width, height: height) else {
+            if !reportedUnexpectedFrameSize {
+                reportedUnexpectedFrameSize = true
+                report("Camera delivered \(width)x\(height), expected \(currentPreset().rawValue)")
             }
             return
         }
@@ -703,8 +832,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return lastProtocolTimestampUs
     }
 
-    private func is4KFrame(width: Int, height: Int) -> Bool {
-        (width == 3840 && height == 2160) || (width == 2160 && height == 3840)
+    private func isPresetFrame(width: Int, height: Int) -> Bool {
+        let preset = currentPreset()
+        return (width == preset.width && height == preset.height) ||
+            (width == preset.height && height == preset.width)
     }
 
     private func encoderNeedsRebuild(width: Int, height: Int) -> Bool {
@@ -740,31 +871,37 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let minimumFps = 1.0 / CMTimeGetSeconds(device.activeVideoMaxFrameDuration)
         let maximumFps = 1.0 / CMTimeGetSeconds(device.activeVideoMinFrameDuration)
-        let verified = dimensions.width == 3840 && dimensions.height == 2160 &&
-            abs(minimumFps - 60.0) < 0.1 && abs(maximumFps - 60.0) < 0.1
-        let state = verified ? "VERIFIED 4K60" : "MISMATCH"
-        resetTelemetry(format: String(format: "%@ %dx%d • device %.1f-%.1f fps • request 60.0",
+        let preset = currentPreset()
+        let requestedFps = Double(preset.frameRate)
+        let verified = Int(dimensions.width) == preset.width && Int(dimensions.height) == preset.height &&
+            abs(minimumFps - requestedFps) < 0.1 && abs(maximumFps - requestedFps) < 0.1
+        let state = verified ? "VERIFIED \(preset.rawValue)" : "MISMATCH"
+        resetTelemetry(format: String(format: "%@ %dx%d • device %.1f-%.1f fps • request %.1f",
                                        state, dimensions.width, dimensions.height,
-                                       minimumFps, maximumFps))
+                                       minimumFps, maximumFps, requestedFps))
     }
 
-    private func apply4K60Format(to device: AVCaptureDevice) -> Bool {
+    /// True when `format` has the preset size and can run at its frame rate.
+    private static func format(_ format: AVCaptureDevice.Format, supports preset: StreamPreset) -> Bool {
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        let frameRate = Double(preset.frameRate)
+        return Int(dimensions.width) == preset.width && Int(dimensions.height) == preset.height &&
+            format.videoSupportedFrameRateRanges.contains(where: {
+                $0.minFrameRate <= frameRate && $0.maxFrameRate >= frameRate
+            })
+    }
+
+    private func applyFormat(_ preset: StreamPreset, to device: AVCaptureDevice) -> Bool {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         do {
             try device.lockForConfiguration()
             defer { device.unlockForConfiguration() }
-            let matching4K60Formats = device.formats.filter { format in
-                let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                return dimensions.width == 3840 && dimensions.height == 2160 &&
-                    format.videoSupportedFrameRateRanges.contains(where: {
-                        $0.minFrameRate <= 60 && $0.maxFrameRate >= 60
-                    })
-            }
-            guard let format = matching4K60Formats.first(where: {
+            let matchingFormats = device.formats.filter { Self.format($0, supports: preset) }
+            guard let format = matchingFormats.first(where: {
                 CMFormatDescriptionGetMediaSubType($0.formatDescription) ==
                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-            }) ?? matching4K60Formats.first else {
-                report("This iPhone does not support 4K at 60 fps")
+            }) ?? matchingFormats.first else {
+                report("This iPhone has no \(preset.rawValue) format")
                 return false
             }
 
@@ -774,7 +911,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             device.automaticallyAdjustsVideoHDREnabled = false
             device.activeFormat = format
             device.isVideoHDREnabled = false
-            let duration = CMTime(value: 1, timescale: 60)
+            let duration = CMTime(value: 1, timescale: CMTimeScale(preset.frameRate))
             device.activeVideoMinFrameDuration = duration
             device.activeVideoMaxFrameDuration = duration
             return true
@@ -816,7 +953,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         telemetryLock.unlock()
         recordCaptureLiveness(at: ProcessInfo.processInfo.systemUptime)
         if isFirstCameraFrame {
-            updateStreamHealth(camera: "CAMERA active • first 4K frame received",
+            updateStreamHealth(camera: "CAMERA active • first frame received",
                                event: "Camera capture is live")
         }
         if shouldPublish { publishDiagnostics() }
@@ -1045,7 +1182,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         captureStalledReported = false
         healthLock.unlock()
         if resumed {
-            updateStreamHealth(camera: "CAMERA active • 4K capture resumed",
+            updateStreamHealth(camera: "CAMERA active • capture resumed",
                                event: "Camera frames resumed")
         }
     }
@@ -1078,7 +1215,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         healthLock.unlock()
 
         if shouldReportCaptureStall {
-            updateStreamHealth(camera: "CAMERA stalled • no 4K frame for 3s",
+            updateStreamHealth(camera: "CAMERA stalled • no frame for 3s",
                                event: "Camera feedback watchdog detected a stall")
         }
         if shouldReportReceiverStall {
@@ -1333,7 +1470,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             switch thermalState {
             case .nominal: label = "THERMAL nominal"
             case .fair: label = "THERMAL fair"
-            case .serious: label = "THERMAL serious • 4K60 at risk"
+            case .serious: label = "THERMAL serious • stream at risk"
             case .critical: label = "THERMAL critical • camera may stop"
             @unknown default: label = "THERMAL unknown"
             }
@@ -1350,7 +1487,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             switch pressure {
             case .nominal: label = "PRESSURE nominal"
             case .fair: label = "PRESSURE fair"
-            case .serious: label = "PRESSURE serious • 4K60 at risk"
+            case .serious: label = "PRESSURE serious • stream at risk"
             case .critical: label = "PRESSURE critical • camera may stop"
             case .shutdown: label = "PRESSURE shutdown • camera interrupted"
             default: label = "PRESSURE unknown"
@@ -1382,13 +1519,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func recoverSession(reason: String) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard appIsActive, isConfigured, !stopped, let device = videoDevice else { return }
-        updateStreamHealth(camera: "CAMERA recovering • waiting for first 4K frame",
+        updateStreamHealth(camera: "CAMERA recovering • waiting for first frame",
                            event: reason)
         session.beginConfiguration()
-        let configured = apply4K60Format(to: device)
+        let configured = applyFormat(currentPreset(), to: device)
         session.commitConfiguration()
         guard configured else {
-            scheduleRecoveryOnSessionQueue(reason: "4K60 configuration recovery")
+            scheduleRecoveryOnSessionQueue(reason: "Camera configuration recovery")
             return
         }
         invalidateEncoder(reason: nil)

@@ -122,3 +122,5 @@ grep -Fq 'private var wifiEnabled = false' "$sender"
 grep -Fq 'if !wifiEnabled { params.prohibitedInterfaceTypes = [.wifi, .cellular] }' "$sender"
 grep -Fq 'params.serviceClass = .interactiveVideo' "$sender"
 grep -q 'var onWiFiAddress' "$sender"
+# T5.4: the sender reports whether the PC connected over Wi-Fi.
+grep -q 'onClientTransport' "$sender"

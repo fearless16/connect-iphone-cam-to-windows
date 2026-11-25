@@ -8,7 +8,8 @@ view_controller="$3"
 # The app must expose persistent user-facing camera/USB state rather than
 # replacing the label with whichever low-level event happened most recently.
 grep -q 'var onStreamHealth' "$streamer"
-grep -q 'CAMERA active • first 4K frame received' "$streamer"
+# T5.4: the first-frame text no longer names a resolution.
+grep -q 'CAMERA active • first frame received' "$streamer"
 grep -q 'CAMERA interrupted • recovering' "$streamer"
 grep -q 'USB waiting for Windows receiver' "$streamer"
 grep -q 'PC receiver connected • waiting for first video frame' "$streamer"
@@ -73,3 +74,7 @@ awk '
   END { exit !(set_line && start_line && set_line < start_line) }
 ' "$streamer"
 grep -q 'streamer.setWiFiEnabled' "$view_controller"
+
+# T5.4: the preset control talks to CameraStreamer only.
+grep -q 'streamer.setPreset' "$view_controller"
+grep -q 'streamer.onPresetAvailability' "$view_controller"
