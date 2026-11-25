@@ -30,6 +30,18 @@ The iPhone plugs into the **Windows PC** with a USB cable.
 `receiver.exe` is the supported single-PC path. It relays the iPhone's HEVC feed
 over local UDP to an OBS Media Source.
 
+### Option 1 (recommended): build exactly like CI with MSYS2
+
+1. Install MSYS2 from msys2.org and open the **MSYS2 MINGW64** shell.
+2. Install the toolchain and libraries:
+   ```
+   pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-ffmpeg mingw-w64-x86_64-libusbmuxd mingw-w64-x86_64-python mingw-w64-x86_64-pkgconf git
+   ```
+3. From the repo root run `sh scripts/build_receiver_msys2.sh`. It runs the C++
+   tests and writes `build/windows-binaries/receiver.exe` plus its DLLs.
+
+### Option 2: Visual Studio and vcpkg
+
 1. Install **Visual Studio 2022** (Community is free) with the **"Desktop development with C++"** workload.
 2. Install **vcpkg** (one-time):
    ```
