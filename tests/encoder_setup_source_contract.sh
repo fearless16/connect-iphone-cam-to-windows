@@ -18,7 +18,8 @@ grep -q 'alwaysDiscardsLateVideoFrames = true' "$source"
 grep -q 'session.sessionPreset = .inputPriority' "$source"
 grep -q 'refreshActiveFormatTelemetry(device)' "$source"
 grep -q 'private let sessionQueue' "$source"
-grep -q 'private func apply4K60Format' "$source"
+# T5.4: the format helper is generic over the preset.
+grep -q 'private func applyFormat' "$source"
 grep -q 'private func recoverSession' "$source"
 grep -q 'private func scheduleRecovery' "$source"
 grep -q 'private func scheduleRecoveryOnSessionQueue' "$source"
@@ -122,16 +123,39 @@ awk '
 ' "$source"
 grep -q 'automaticallyAdjustsVideoHDREnabled = false' "$source"
 grep -q 'isVideoHDREnabled = false' "$source"
-grep -q 'let matching4K60Formats = device.formats.filter' "$source"
-grep -q 'matching4K60Formats.first(where:' "$source"
+# T5.4: renamed from matching4K60Formats.
+grep -q 'let matchingFormats = device.formats.filter' "$source"
+grep -q 'matchingFormats.first(where:' "$source"
 grep -q 'kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange' "$source"
 auto_hdr_line=$(grep -n 'automaticallyAdjustsVideoHDREnabled = false' "$source" | head -n1 | cut -d: -f1)
 format_line=$(grep -n 'device.activeFormat = format' "$source" | head -n1 | cut -d: -f1)
 hdr_line=$(grep -n 'device.isVideoHDREnabled = false' "$source" | head -n1 | cut -d: -f1)
 [ "$auto_hdr_line" -lt "$format_line" ]
 [ "$format_line" -lt "$hdr_line" ]
-grep -q 'AverageBitRate, value: NSNumber(value: 40_000_000)' "$source"
-grep -q '\[NSNumber(value: 10_000_000), NSNumber(value: 1)\] as CFArray' "$source"
+# T5.4: the rate comes from the preset and transport; 4K over USB keeps the
+# previous 40 Mbps average and 10 MB/s limit.
+grep -q 'AverageBitRate, value: NSNumber(value: target)' "$source"
+grep -q 'case .p2160: return (usb: 40_000_000, wifi: 25_000_000)' "$source"
+grep -q '\[NSNumber(value: target / 4), NSNumber(value: 1)\] as CFArray' "$source"
+# T5.4: the other G8 prime rates and the 60 fps presets.
+grep -q 'case .p720: return (usb: 10_000_000, wifi: 8_000_000)' "$source"
+grep -q 'case .p1080: return (usb: 20_000_000, wifi: 15_000_000)' "$source"
+grep -q 'var frameRate: Int { 60 }' "$source"
+# T5.4: switching presets keeps the PC connection: setPreset never rebinds
+# the listener and always asks for a new join point.
+set_preset_body=$(tr -d '\r' < "$source" | awk '
+  /func setPreset\(/ { in_f = 1 }
+  in_f { print }
+  in_f && /^    }$/ { exit }
+')
+printf '%s\n' "$set_preset_body" | grep -q 'applyFormat(preset, to: device)'
+printf '%s\n' "$set_preset_body" | grep -q 'resetForDiscontinuity'
+if printf '%s\n' "$set_preset_body" | grep -q 'restartListening'; then
+  echo "setPreset must not restart the listener" >&2
+  exit 1
+fi
+# T5.4: the bit rate follows the transport the PC connected over.
+grep -q 'sender.onClientTransport' "$source"
 grep -q 'DataRateLimits, value: rateLimit' "$source"
 grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 120)' "$source"
 grep -q 'setIdleTimerDisabled(true)' "$source"

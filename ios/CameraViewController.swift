@@ -9,6 +9,8 @@ final class CameraViewController: UIViewController {
     private let diagnosticsLabel = UILabel()
     private let orientationControl = UISegmentedControl(items: ["Landscape", "Portrait"])
     private let capabilitiesButton = UIButton(type: .system)
+    private let presetControl = UISegmentedControl(items: StreamPreset.allCases.map(\.title))
+    private var confirmedPreset = StreamPreset.stored
     private let wifiSwitch = UISwitch()
     private let wifiRow = UIStackView()
     private var didStart = false
@@ -59,6 +61,15 @@ final class CameraViewController: UIViewController {
         orientationControl.addTarget(self, action: #selector(outputOrientationChanged), for: .valueChanged)
         view.addSubview(orientationControl)
 
+        // T5.4: output quality preset (720p / 1080p / 4K, all 60 fps).
+        presetControl.selectedSegmentIndex = StreamPreset.allCases.firstIndex(of: confirmedPreset) ?? 0
+        presetControl.selectedSegmentTintColor = .systemBlue
+        presetControl.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        presetControl.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .normal)
+        presetControl.translatesAutoresizingMaskIntoConstraints = false
+        presetControl.addTarget(self, action: #selector(presetChanged), for: .valueChanged)
+        view.addSubview(presetControl)
+
         // T5.2: one-shot device capability report, read-only.
         var capabilitiesConfig = UIButton.Configuration.plain()
         capabilitiesConfig.title = "Capabilities"
@@ -91,7 +102,11 @@ final class CameraViewController: UIViewController {
         wifiRow.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(wifiRow)
         NSLayoutConstraint.activate([
-            wifiRow.topAnchor.constraint(equalTo: orientationControl.bottomAnchor, constant: 8),
+            presetControl.topAnchor.constraint(equalTo: orientationControl.bottomAnchor, constant: 8),
+            presetControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            presetControl.widthAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.widthAnchor,
+                                                  constant: -32),
+            wifiRow.topAnchor.constraint(equalTo: presetControl.bottomAnchor, constant: 8),
             wifiRow.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             capabilitiesButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             capabilitiesButton.bottomAnchor.constraint(equalTo: diagnosticsLabel.topAnchor, constant: -10),
@@ -120,6 +135,17 @@ final class CameraViewController: UIViewController {
             self?.orientationControl.selectedSegmentIndex = orientation == .portrait ? 1 : 0
             self?.updatePreviewOrientation(orientation)
         }
+        streamer.onPresetChanged = { [weak self] preset in
+            guard let self else { return }
+            self.confirmedPreset = preset
+            self.presetControl.selectedSegmentIndex = StreamPreset.allCases.firstIndex(of: preset) ?? 0
+        }
+        streamer.onPresetAvailability = { [weak self] available in
+            guard let self else { return }
+            for (index, preset) in StreamPreset.allCases.enumerated() {
+                self.presetControl.setEnabled(available.contains(preset), forSegmentAt: index)
+            }
+        }
         updatePreviewOrientation(.landscape)
     }
 
@@ -141,6 +167,15 @@ final class CameraViewController: UIViewController {
         // connection accepts the requested rotation.
         orientationControl.selectedSegmentIndex = confirmedOutputOrientation == .portrait ? 1 : 0
         streamer.setOutputOrientation(orientation)
+    }
+
+    @objc private func presetChanged() {
+        let index = presetControl.selectedSegmentIndex
+        guard StreamPreset.allCases.indices.contains(index) else { return }
+        // Keep the displayed choice at the confirmed value until the camera
+        // accepts the format; onPresetChanged moves it.
+        presetControl.selectedSegmentIndex = StreamPreset.allCases.firstIndex(of: confirmedPreset) ?? 0
+        streamer.setPreset(StreamPreset.allCases[index])
     }
 
     @objc private func wifiSwitchChanged() {

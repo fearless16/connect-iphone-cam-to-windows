@@ -20,6 +20,9 @@ final class StreamSender {
     private let queue = DispatchQueue(label: "sender")
     var onStatus: ((String) -> Void)?
     var onClientConnected: (() -> Void)?
+    /// Called just before `onClientConnected` with whether the PC connected over
+    /// Wi-Fi (true) or USB (false). The encoder bit rate follows the transport.
+    var onClientTransport: ((Bool) -> Void)?
     var onFrameRate: ((Double, UInt64) -> Void)?
     /// Window-max time (ms) a packet waited in the send queue plus the send, reported with onFrameRate.
     var onQueueLatency: ((Double) -> Void)?
@@ -269,6 +272,7 @@ final class StreamSender {
                         self.sentFrameStart = ProcessInfo.processInfo.systemUptime
                         self.windowMaxQueueLatencyMs = 0
                         self.publishConnectionState(.connected)
+                        self.onClientTransport?(conn.currentPath?.usesInterfaceType(.wifi) ?? false)
                         self.onClientConnected?()
                         self.report("PC connected • starting video")
                     case .waiting(let error):

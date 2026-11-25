@@ -1318,7 +1318,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.2 | diag/ios-capability-probe | S | T5.1 | — | DONE | 2026-11-26 | Swift not compiled locally; CI not run. Unverified: AVFoundation property names (esp. isCinematicVideoCaptureSupported, iOS 26 SDK); AC3 = DC-4 on device |
 | DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
 | DC-5a | (owner) | — | T5.0, T3.1 | — | TODO | | USB vs Wi-Fi A/B |
-| T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | TODO | | |
+| T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled. 183 code lines. AC2 CI; AC5-AC7 device (DC-5a/DC-5b) |
 | T5.5 | feat/receiver-resolution-follow | S | — | — | DONE | 2026-11-26 | hevc_sps_test + receiver link verified locally (MSYS2 g++); Merged without CI (owner instruction). AC3 (e2e 1080p->720p, needs G1) and AC4 (DC-5b device) open |
 | T5.8 | feat/ios-adaptive-bitrate | S | T5.4 | G14 | TODO | | |
 | T5.7 | feat/ios-quality-advisor | S | T5.8 | — | TODO | | |
