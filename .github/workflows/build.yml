@@ -64,6 +64,14 @@ jobs:
             -o /tmp/stream_header_test
           /tmp/stream_header_test
 
+      - name: Test adaptive bit rate controller
+        run: |
+          xcrun swiftc -swift-version 5 \
+            ios/QualityAdvisor.swift \
+            tests/quality_advisor_test.swift \
+            -o /tmp/quality_advisor_test
+          /tmp/quality_advisor_test
+
       - name: Test StreamSender over real sockets
         run: |
           # Top-level test code is only legal in a file named main.swift.

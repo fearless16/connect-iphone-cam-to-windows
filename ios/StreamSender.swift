@@ -23,6 +23,15 @@ final class StreamSender {
     /// Called just before `onClientConnected` with whether the PC connected over
     /// Wi-Fi (true) or USB (false). The encoder bit rate follows the transport.
     var onClientTransport: ((Bool) -> Void)?
+    /// One reading of the TCP link to the PC, from the transport's own counters.
+    struct LinkStats {
+        var rttMs: Double
+        var rttVarMs: Double
+        /// Retransmitted bytes / sent bytes over the window, 0 if nothing was sent.
+        var retransmitRatio: Double
+    }
+    /// Every 2 s while a PC is connected (T5.8). Called on the sender queue.
+    var onLinkStats: ((LinkStats) -> Void)?
     var onFrameRate: ((Double, UInt64) -> Void)?
     /// Window-max time (ms) a packet waited in the send queue plus the send, reported with onFrameRate.
     var onQueueLatency: ((Double) -> Void)?
@@ -61,6 +70,12 @@ final class StreamSender {
     // T3.1: off by default, so the listener refuses Wi-Fi and cellular and only
     // the USB (usbmux) path reaches it. Confined to `queue`.
     private var wifiEnabled = false
+    // T5.8: one repeating timer (never recreated while running) collects the
+    // transport counters of the live connection every 2 s. Confined to `queue`.
+    private static let linkStatsInterval: TimeInterval = 2
+    private var linkTimer: DispatchSourceTimer?
+    private var pendingTransferReport: NWConnection.PendingDataTransferReport?
+    private var pendingTransferConnection: NWConnection?
 
     init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -78,7 +93,52 @@ final class StreamSender {
             guard let self else { return }
             self.desiredRunning = true
             self.publishConnectionState(.waiting)
+            self.startLinkTimer()
             self.startOnQueue()
+        }
+    }
+
+    private func startLinkTimer() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard linkTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.linkStatsInterval, repeating: Self.linkStatsInterval)
+        timer.setEventHandler { [weak self] in self?.collectLinkStats() }
+        linkTimer = timer
+        timer.resume()
+    }
+
+    private func stopLinkTimer() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        linkTimer?.cancel()
+        linkTimer = nil
+        pendingTransferReport = nil
+        pendingTransferConnection = nil
+    }
+
+    /// Each tick collects the report started on the previous tick and starts the
+    /// next one, so a report always covers one full interval of one connection.
+    private func collectLinkStats() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard let conn = connection, connectionReady else {
+            pendingTransferReport = nil
+            pendingTransferConnection = nil
+            return
+        }
+        let previous = pendingTransferReport
+        let previousConnection = pendingTransferConnection
+        pendingTransferReport = conn.startDataTransferReport()
+        pendingTransferConnection = conn
+        // A report that belongs to an earlier connection says nothing about this one.
+        guard let previous, previousConnection === conn else { return }
+        previous.collect(queue: queue) { [weak self, weak conn] report in
+            guard let self, let conn, self.connection === conn,
+                  let path = report.pathReports.first else { return }
+            let sent = Double(path.sentTransportByteCount)
+            self.onLinkStats?(LinkStats(
+                rttMs: path.transportSmoothedRTT * 1000,
+                rttVarMs: path.transportRTTVariance * 1000,
+                retransmitRatio: sent > 0 ? Double(path.retransmittedTransportByteCount) / sent : 0))
         }
     }
 
@@ -360,6 +420,7 @@ final class StreamSender {
     func stop() {
         queue.async { [weak self] in
             self?.desiredRunning = false
+            self?.stopLinkTimer()
             self?.listenerRetryAttempt = 0
             self?.connection?.cancel()
             self?.connection = nil

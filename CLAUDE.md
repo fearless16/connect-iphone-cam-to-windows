@@ -38,6 +38,7 @@ workflow below.
 | `ios/CameraStreamer.swift` | Capture, 4K60 format, HEVC encoder, recovery, telemetry | `StreamSender`, `LengthPrefixedHEVC` | Supported (oversized, D2) |
 | `ios/StreamSender.swift` | TCP listener, packet framing, bounded send queue, keyframe gating | `StreamHeader`, Network | Supported |
 | `ios/LengthPrefixedHEVC.swift` | AVCC→Annex-B conversion, IDR detection (pure) | Foundation, CoreMedia | Supported |
+| `ios/QualityAdvisor.swift` | Adaptive bit rate controller (pure) | Foundation | Supported |
 | `windows/receiver.cpp` | USB host discovery, TCP, header validation, OBS relay, `--gpu-ring` diagnostics | protocol, `relay_*.h`, `hevc_access_unit.h`, FFmpeg, usbmuxd, Winsock | Supported |
 | `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h` | Pure relay logic (clock, recovery gate, join-point detection, arrival timing stats) | C++ std only | Supported |
 | `windows/gpu_frame_publisher.*` | D3D11 GPU ring producer (`--gpu-ring` only) | `mf_virtual_camera/gpu_frame_transport.h` (D1) | Diagnostics |

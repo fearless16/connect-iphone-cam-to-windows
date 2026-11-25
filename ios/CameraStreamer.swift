@@ -69,6 +69,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var activePreset = StreamPreset.stored
     private var linkIsWiFi = false
     private var bitRateFailureReported = false
+    // T5.8: the adapted target while the link is struggling; nil means the full
+    // preset rate. Protected by encoderStateLock.
+    private var liveBitRate: Int?
+    // T5.8: link-window state. Accessed only on sessionQueue.
+    private var bitrateController = BitrateController()
+    private var windowMaxQueueMs = 0.0
+    private var windowDropTotal: UInt64 = 0
+    private var lastWindowDropTotal: UInt64 = 0
     private var forceNextKeyFrame = false
     private var isConfigured = false
     private var stopped = false
@@ -135,6 +143,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var cameraHealth = "CAMERA starting"
     private var usbHealth = "USB waiting for Windows receiver"
     private var wifiHealth = "WI-FI off (USB only)"
+    private var bitrateHealth = "BITRATE --"
     private var healthEvent = "Preparing camera"
     private var lastCaptureUptime: TimeInterval = 0
     private var lastSuccessfulSendUptime: TimeInterval = 0
@@ -328,9 +337,17 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         sender.onQueueLatency = { [weak self] maxMs in
             self?.recordQueueLatency(maxMs)
+            self?.sessionQueue.async { [weak self] in
+                guard let self else { return }
+                self.windowMaxQueueMs = max(self.windowMaxQueueMs, maxMs)
+            }
         }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
             self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
+            self?.sessionQueue.async { [weak self] in self?.windowDropTotal = droppedFrames }
+        }
+        sender.onLinkStats = { [weak self] stats in
+            self?.sessionQueue.async { [weak self] in self?.handleLinkStats(stats) }
         }
         sender.onFrameSent = { [weak self] sentAt in
             self?.sessionQueue.async { [weak self] in
@@ -454,18 +471,80 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         return activePreset
     }
 
+    /// The bit rate the encoder should use now: the adapted rate while the link
+    /// is struggling, otherwise the full rate of the preset and transport.
     private func currentBitRate() -> Int {
         encoderStateLock.lock()
         defer { encoderStateLock.unlock() }
-        return linkIsWiFi ? activePreset.bitRates.wifi : activePreset.bitRates.usb
+        return liveBitRate ?? presetTargetBitRateLocked()
+    }
+
+    /// The full rate for the current preset and transport. Caller holds encoderStateLock.
+    private func presetTargetBitRateLocked() -> Int {
+        linkIsWiFi ? activePreset.bitRates.wifi : activePreset.bitRates.usb
     }
 
     private func setLinkIsWiFi(_ overWiFi: Bool) {
         encoderStateLock.lock()
         let changed = linkIsWiFi != overWiFi
+        let adapted = liveBitRate != nil
         linkIsWiFi = overWiFi
+        liveBitRate = nil
         encoderStateLock.unlock()
-        if changed { applyLiveBitRate() }
+        // A new PC connection starts again from the full preset rate.
+        sessionQueue.async { [weak self] in self?.resetAdaptiveBitRate() }
+        if changed || adapted { applyLiveBitRate() }
+    }
+
+    // MARK: - T5.8 adaptive bit rate (gate G14)
+    /// Folds one 2-second link reading into the live bit rate. The resolution is
+    /// never changed here, and the rate stays within 50-100% of the preset.
+    private func handleLinkStats(_ stats: StreamSender.LinkStats) {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard isConfigured, !stopped else { return }
+        // The sender counts drops per connection, so a smaller total is a new connection.
+        let drops = windowDropTotal >= lastWindowDropTotal ? windowDropTotal - lastWindowDropTotal : windowDropTotal
+        lastWindowDropTotal = windowDropTotal
+        let window = LinkWindow(drops: drops,
+                                maxQueueMs: windowMaxQueueMs,
+                                rttMs: stats.rttMs,
+                                rttVarMs: stats.rttVarMs,
+                                retransmitRatio: stats.retransmitRatio,
+                                thermal: ProcessInfo.processInfo.thermalState)
+        windowMaxQueueMs = 0
+        encoderStateLock.lock()
+        let target = presetTargetBitRateLocked()
+        let current = liveBitRate ?? target
+        let next = bitrateController.nextBitrate(current: current, presetTarget: target, window: window)
+        if next != current { liveBitRate = next }
+        encoderStateLock.unlock()
+        guard next != current else { return }
+        applyLiveBitRate()
+        publishBitrateHealth()
+    }
+
+    /// Back to the full preset rate: after a preset change, a new PC connection
+    /// or a camera recovery.
+    private func resetAdaptiveBitRate() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        encoderStateLock.lock()
+        liveBitRate = nil
+        encoderStateLock.unlock()
+        bitrateController = BitrateController()
+        windowMaxQueueMs = 0
+        publishBitrateHealth()
+    }
+
+    private func publishBitrateHealth() {
+        encoderStateLock.lock()
+        let target = presetTargetBitRateLocked()
+        let live = liveBitRate ?? target
+        encoderStateLock.unlock()
+        updateStreamHealth(bitrate: Self.bitrateHealthText(live: live, target: target))
+    }
+
+    private static func bitrateHealthText(live: Int, target: Int) -> String {
+        String(format: "BITRATE %.1f/%.0f Mbps", Double(live) / 1e6, Double(target) / 1e6)
     }
 
     /// Applies the current target rate to the running encoder. A failure is
@@ -503,6 +582,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 // not mistaken for a wrong-size camera.
                 self.encoderStateLock.lock()
                 self.activePreset = preset
+                self.liveBitRate = nil
                 self.encoderStateLock.unlock()
             }
             self.session.commitConfiguration()
@@ -515,6 +595,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.invalidateEncoder(reason: nil)
             self.sender.resetForDiscontinuity(reason: "Preset \(preset.rawValue)")
             self.refreshActiveFormatTelemetry(device)
+            self.resetAdaptiveBitRate()
             self.publishPreset(preset)
         }
     }
@@ -1057,6 +1138,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         cameraHealth = "CAMERA starting"
         usbHealth = "USB waiting for Windows receiver"
         wifiHealth = Self.wifiHealthText(nil, enabled: Self.isWiFiEnabledStored)
+        let storedRate = StreamPreset.stored.bitRates.usb
+        bitrateHealth = Self.bitrateHealthText(live: storedRate, target: storedRate)
         healthEvent = "Preparing camera"
         let revision = healthRevision
         let text = healthSnapshotLocked()
@@ -1102,6 +1185,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func updateStreamHealth(camera: String? = nil,
                                     usb: String? = nil,
                                     wifi: String? = nil,
+                                    bitrate: String? = nil,
                                     event: String? = nil) {
         healthLock.lock()
         guard healthUpdatesEnabled else {
@@ -1111,6 +1195,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if let camera { cameraHealth = camera }
         if let usb { usbHealth = usb }
         if let wifi { wifiHealth = wifi }
+        if let bitrate { bitrateHealth = bitrate }
         if let event { healthEvent = event }
         healthRevision &+= 1
         let revision = healthRevision
@@ -1120,7 +1205,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func healthSnapshotLocked() -> String {
-        "\(cameraHealth)\n\(usbHealth)\n\(wifiHealth)\nSTATUS: \(healthEvent)"
+        "\(cameraHealth)\n\(usbHealth)\n\(wifiHealth)\n\(bitrateHealth)\nSTATUS: \(healthEvent)"
     }
 
     private func deliverStreamHealth(_ text: String, revision: UInt64) {
@@ -1528,6 +1613,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             scheduleRecoveryOnSessionQueue(reason: "Camera configuration recovery")
             return
         }
+        resetAdaptiveBitRate()
         invalidateEncoder(reason: nil)
         if !session.isRunning { session.startRunning() }
         guard session.isRunning else {
