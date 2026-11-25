@@ -9,6 +9,8 @@ final class CameraViewController: UIViewController {
     private let diagnosticsLabel = UILabel()
     private let orientationControl = UISegmentedControl(items: ["Landscape", "Portrait"])
     private let capabilitiesButton = UIButton(type: .system)
+    private let wifiSwitch = UISwitch()
+    private let wifiRow = UIStackView()
     private var didStart = false
     private var confirmedOutputOrientation: OutputOrientation = .landscape
 
@@ -68,7 +70,29 @@ final class CameraViewController: UIViewController {
         capabilitiesButton.translatesAutoresizingMaskIntoConstraints = false
         capabilitiesButton.addTarget(self, action: #selector(showCapabilities), for: .touchUpInside)
         view.addSubview(capabilitiesButton)
+
+        // T3.1: Wi-Fi streaming is opt-in and off by default. The switch talks to
+        // CameraStreamer only.
+        let wifiLabel = UILabel()
+        wifiLabel.text = "Wi-Fi"
+        wifiLabel.textColor = .white
+        wifiLabel.font = .preferredFont(forTextStyle: .subheadline)
+        wifiSwitch.isOn = CameraStreamer.isWiFiEnabledStored
+        wifiSwitch.addTarget(self, action: #selector(wifiSwitchChanged), for: .valueChanged)
+        wifiRow.axis = .horizontal
+        wifiRow.alignment = .center
+        wifiRow.spacing = 8
+        wifiRow.addArrangedSubview(wifiLabel)
+        wifiRow.addArrangedSubview(wifiSwitch)
+        wifiRow.isLayoutMarginsRelativeArrangement = true
+        wifiRow.layoutMargins = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 8)
+        wifiRow.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        wifiRow.layer.cornerRadius = 10
+        wifiRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(wifiRow)
         NSLayoutConstraint.activate([
+            wifiRow.topAnchor.constraint(equalTo: orientationControl.bottomAnchor, constant: 8),
+            wifiRow.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             capabilitiesButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
             capabilitiesButton.bottomAnchor.constraint(equalTo: diagnosticsLabel.topAnchor, constant: -10),
             orientationControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
@@ -117,6 +141,10 @@ final class CameraViewController: UIViewController {
         // connection accepts the requested rotation.
         orientationControl.selectedSegmentIndex = confirmedOutputOrientation == .portrait ? 1 : 0
         streamer.setOutputOrientation(orientation)
+    }
+
+    @objc private func wifiSwitchChanged() {
+        streamer.setWiFiEnabled(wifiSwitch.isOn)
     }
 
     @objc private func showCapabilities() {

@@ -28,6 +28,9 @@ final class StreamSender {
     var onKeyFrameNeeded: (() -> Void)?
     /// Called once each time a live PC connection ends, with a short reason.
     var onDisconnect: ((String) -> Void)?
+    /// IPv4 address of the Wi-Fi interface while Wi-Fi mode is on, else nil.
+    /// Published when the listener becomes ready and on every path update.
+    var onWiFiAddress: ((String?) -> Void)?
     // Keep the queue short to bound latency, but allow enough packets to absorb
     // Network.framework completion jitter. A one-packet gate measured ~30 fps
     // even when the camera was producing native 4K60.
@@ -52,6 +55,9 @@ final class StreamSender {
     private let pathMonitor = NWPathMonitor()
     private var wiredPathSignature: String?
     private var listenerReady = false
+    // T3.1: off by default, so the listener refuses Wi-Fi and cellular and only
+    // the USB (usbmux) path reaches it. Confined to `queue`.
+    private var wifiEnabled = false
 
     init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -70,6 +76,17 @@ final class StreamSender {
             self.desiredRunning = true
             self.publishConnectionState(.waiting)
             self.startOnQueue()
+        }
+    }
+
+    /// Opt in to (or out of) Wi-Fi connections. Rebinds the listener on a change,
+    /// because the allowed interfaces are fixed when the listener is created.
+    func setWiFiEnabled(_ enabled: Bool) {
+        queue.async { [weak self] in
+            guard let self, self.wifiEnabled != enabled else { return }
+            self.wifiEnabled = enabled
+            self.restartListening(reason: enabled ? "Wi-Fi streaming enabled" : "Wi-Fi streaming disabled")
+            self.publishWiFiAddress()
         }
     }
 
@@ -110,6 +127,7 @@ final class StreamSender {
 
     private func handlePathUpdate(_ path: NWPath) {
         dispatchPrecondition(condition: .onQueue(queue))
+        publishWiFiAddress()
         let wiredInterfaces = path.availableInterfaces
             .filter { $0.type == .wiredEthernet }
             .map(\.name)
@@ -135,6 +153,33 @@ final class StreamSender {
         restartListening(reason: "USB network path changed • rebinding listener")
     }
 
+    private func publishWiFiAddress() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        onWiFiAddress?(wifiEnabled ? Self.wifiIPv4Address() : nil)
+    }
+
+    /// IPv4 address of `en0` (Wi-Fi on iPhone), or nil when it has none.
+    private static func wifiIPv4Address() -> String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            cursor = entry.pointee.ifa_next
+            guard let address = entry.pointee.ifa_addr,
+                  address.pointee.sa_family == UInt8(AF_INET),
+                  String(cString: entry.pointee.ifa_name) == "en0" else { continue }
+            let capacity = Int(INET_ADDRSTRLEN)
+            var host = [CChar](repeating: 0, count: capacity)
+            address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { socketAddress in
+                var ipv4 = socketAddress.pointee.sin_addr
+                _ = inet_ntop(AF_INET, &ipv4, &host, socklen_t(capacity))
+            }
+            return String(cString: host)
+        }
+        return nil
+    }
+
     private func startOnQueue() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard listener == nil else { return }
@@ -142,6 +187,10 @@ final class StreamSender {
         // Push each frame out immediately; Nagle would hold back a frame's tail.
         tcpOptions.noDelay = true
         let params = NWParameters(tls: nil, tcp: tcpOptions)
+        // WMM video class for Wi-Fi; harmless on USB.
+        params.serviceClass = .interactiveVideo
+        // D4: without the Wi-Fi opt-in, refuse every non-USB interface.
+        if !wifiEnabled { params.prohibitedInterfaceTypes = [.wifi, .cellular] }
         // restartListening closes the PC connection server-side, leaving port
         // 12345 in TIME_WAIT. Without reuse the rebind fails and backs off ~30 s.
         params.allowLocalEndpointReuse = true
@@ -164,6 +213,7 @@ final class StreamSender {
                 self.listenerReady = true
                 self.listenerRetryAttempt = 0
                 self.publishConnectionState(.waiting)
+                self.publishWiFiAddress()
                 self.report("USB stream service ready")
             case .waiting(let error):
                 self.publishConnectionState(.waiting)

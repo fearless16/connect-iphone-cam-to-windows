@@ -62,3 +62,14 @@ grep -q 'DispatchQueue.main.async' "$streamer"
 # view controller asks CameraStreamer for it and never touches StreamSender.
 grep -q 'func capabilityReport(completion:' "$streamer"
 grep -q 'streamer.capabilityReport' "$view_controller"
+
+# T3.1: the Wi-Fi switch is stored (default off) and reaches the sender before
+# the listener starts. The view controller never touches StreamSender.
+grep -Fq 'static let wifiPreferenceKey = "stream.wifiEnabled"' "$streamer"
+grep -q 'func setWiFiEnabled' "$streamer"
+awk '
+  /sender\.setWiFiEnabled\(Self\.isWiFiEnabledStored\)/ { set_line = NR }
+  /sender\.start\(\)/ && !start_line { start_line = NR }
+  END { exit !(set_line && start_line && set_line < start_line) }
+' "$streamer"
+grep -q 'streamer.setWiFiEnabled' "$view_controller"

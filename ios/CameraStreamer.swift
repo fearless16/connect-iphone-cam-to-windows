@@ -100,6 +100,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var healthUpdatesEnabled = false
     private var cameraHealth = "CAMERA starting"
     private var usbHealth = "USB waiting for Windows receiver"
+    private var wifiHealth = "WI-FI off (USB only)"
     private var healthEvent = "Preparing camera"
     private var lastCaptureUptime: TimeInterval = 0
     private var lastSuccessfulSendUptime: TimeInterval = 0
@@ -301,6 +302,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                 self.recordSuccessfulSend(at: sentAt)
             }
         }
+        sender.onWiFiAddress = { [weak self] address in
+            self?.sessionQueue.async { [weak self] in
+                guard let self, self.isConfigured, !self.stopped else { return }
+                self.updateStreamHealth(wifi: Self.wifiHealthText(address, enabled: Self.isWiFiEnabledStored))
+            }
+        }
+        // The allowed interfaces are fixed when the listener is created, so the
+        // stored choice must reach the sender before it starts listening.
+        sender.setWiFiEnabled(Self.isWiFiEnabledStored)
         sender.start()   // Step 5: begin listening for the Windows receiver
         startLivenessWatchdog()
         frameStartUptime = ProcessInfo.processInfo.systemUptime
@@ -393,6 +403,27 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let bytes = [UInt8((code >> 24) & 0xff), UInt8((code >> 16) & 0xff),
                      UInt8((code >> 8) & 0xff), UInt8(code & 0xff)]
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    // T3.1: Wi-Fi streaming is opt-in and off by default (G7 option A).
+    static let wifiPreferenceKey = "stream.wifiEnabled"
+
+    static var isWiFiEnabledStored: Bool {
+        UserDefaults.standard.bool(forKey: wifiPreferenceKey)
+    }
+
+    /// Persists the Wi-Fi choice and applies it. The sender rebinds its listener,
+    /// which closes the current PC connection; the receiver reconnects.
+    func setWiFiEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.wifiPreferenceKey)
+        sender.setWiFiEnabled(enabled)
+    }
+
+    private static func wifiHealthText(_ address: String?, enabled: Bool) -> String {
+        if let address {
+            return "WI-FI \(address):\(StreamSender.port) • visible to this network"
+        }
+        return enabled ? "WI-FI on • waiting for a Wi-Fi address" : "WI-FI off (USB only)"
     }
 
     /// Persists a user-selected frame orientation. The setting affects only the
@@ -888,6 +919,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         healthUpdatesEnabled = true
         cameraHealth = "CAMERA starting"
         usbHealth = "USB waiting for Windows receiver"
+        wifiHealth = Self.wifiHealthText(nil, enabled: Self.isWiFiEnabledStored)
         healthEvent = "Preparing camera"
         let revision = healthRevision
         let text = healthSnapshotLocked()
@@ -932,6 +964,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private func updateStreamHealth(camera: String? = nil,
                                     usb: String? = nil,
+                                    wifi: String? = nil,
                                     event: String? = nil) {
         healthLock.lock()
         guard healthUpdatesEnabled else {
@@ -940,6 +973,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         if let camera { cameraHealth = camera }
         if let usb { usbHealth = usb }
+        if let wifi { wifiHealth = wifi }
         if let event { healthEvent = event }
         healthRevision &+= 1
         let revision = healthRevision
@@ -949,7 +983,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func healthSnapshotLocked() -> String {
-        "\(cameraHealth)\n\(usbHealth)\nSTATUS: \(healthEvent)"
+        "\(cameraHealth)\n\(usbHealth)\n\(wifiHealth)\nSTATUS: \(healthEvent)"
     }
 
     private func deliverStreamHealth(_ text: String, revision: UInt64) {

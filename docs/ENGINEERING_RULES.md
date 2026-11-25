@@ -113,6 +113,11 @@ Do not widen network exposure:
 
 New listeners or non-loopback outputs need human approval. Debt D4 is the existing exception.
 
+Approved exception (G7, option A): the phone streams over Wi-Fi only while the
+user turns on the Wi-Fi switch. It is off by default, and while it is off the
+listener sets `prohibitedInterfaceTypes = [.wifi, .cellular]`. There is no
+authentication. Do not weaken this default (`stream_sender_source_contract.sh`).
+
 ## Human-judgment decisions (stop and ask)
 
 - Any wire-format change: header fields, magic, size, codecs, or port. Old app builds break silently (D3).
@@ -131,7 +136,7 @@ Do not copy these patterns. Fix them only when that is the task.
 | D1 | `windows/gpu_frame_publisher.h` includes `mf_virtual_camera/gpu_frame_transport.h`, so the supported code depends on the archived directory | Move the header to `windows/` and repoint both users (needs approval: it touches archived code) |
 | D2 | `ios/CameraStreamer.swift` (~1,250 lines) owns capture, encode, recovery, telemetry, health, and the watchdog | Add no new responsibilities. Extract pure logic into R-ARCH-4 units when touched |
 | D3 | The wire header has no version field | Human decision. A version needs a coordinated app + receiver release |
-| D4 | iOS `NWListener` accepts on every interface, unauthenticated, and the newest connection replaces the current one | Human decision. For example, require the wired interface |
+| D4 | USB-only by default; Wi-Fi is opt-in (G7-A) and unauthenticated while on. The newest connection replaces the current one | Human decision. A pairing PIN (G7 option B) needs a protocol change |
 | D5 | ~~The sender accepted frames up to `UInt32.max`, but the receiver rejects anything over 16 MiB~~ | Fixed by T1.7: `StreamSender.send` guards `StreamHeader.maxFrameSize` and requests a keyframe |
 | D6 | Source contracts are grep-based: they pin names and strings, not behavior | Prefer runtime tests for logic you can extract |
 | D7 | `scripts/build_*.sh` contain placeholder paths and are not used by CI | Use `scripts/build_receiver_msys2.sh` (mirrors CI) |

@@ -114,3 +114,11 @@ fi
 # T5.0: a connection that reaches .failed is cancelled so it is never leaked.
 failed_case=$(awk '/case \.failed\(let error\):/ { n++ } n == 2 { print } n == 2 && /case \.cancelled:/ { exit }' "$sender")
 printf '%s\n' "$failed_case" | grep -q 'conn\.cancel()'
+
+# T3.1 (G7 option A): Wi-Fi streaming is opt-in and off by default. Unless the
+# switch is on, the listener refuses Wi-Fi and cellular; USB still reaches it.
+grep -q 'func setWiFiEnabled' "$sender"
+grep -Fq 'private var wifiEnabled = false' "$sender"
+grep -Fq 'if !wifiEnabled { params.prohibitedInterfaceTypes = [.wifi, .cellular] }' "$sender"
+grep -Fq 'params.serviceClass = .interactiveVideo' "$sender"
+grep -q 'var onWiFiAddress' "$sender"
