@@ -83,6 +83,7 @@ over local UDP to an OBS Media Source.
 | Xcode: "Failed to code sign" | Set a Team in Signing & Capabilities (Part A step 4). |
 | App won't launch on phone | Trust developer: Settings → General → VPN & Device Management. |
 | Receiver keeps retrying | Turn on iPhone Personal Hotspot, keep USB connected, and leave the camera app open. |
+| Connect to a specific phone address (Wi-Fi or tests) | Run `receiver.exe --host <ip>`. It connects straight to `<ip>:12345` and skips usbmux. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
 | Video froze after clicking the receiver window | Fixed in this receiver build (QuickEdit is disabled). On old builds, press Esc in the console. |

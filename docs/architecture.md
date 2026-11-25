@@ -22,6 +22,8 @@ hardware HEVC at 3840x2160/60. The receiver rejects corrupt or oversized
 packets and emits MPEG-TS over loopback UDP. End-to-end 4K60 still requires a
 30-minute phone/OBS soak test before it can be called reliable.
 
+**Receiver CLI:** `receiver.exe [--obs-udp|--gpu-ring] [--host <iPhone address>] [iPhone USB host]`. `--host` connects straight to `<address>:12345` and skips usbmux and the Apple-adapter bind.
+
 ## Legacy virtual camera
 
 The old virtual-camera and DirectShow sources remain in the repository only as
