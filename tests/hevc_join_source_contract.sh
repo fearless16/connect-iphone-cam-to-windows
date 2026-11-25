@@ -6,6 +6,7 @@ sender="$2"
 
 grep -q 'kVTEncodeFrameOptionKey_ForceKeyFrame' "$camera"
 grep -q 'onClientConnected' "$camera"
+grep -q 'onKeyFrameNeeded' "$camera"
 grep -q 'onClientConnected' "$sender"
 grep -q 'waitingForKeyFrame' "$sender"
 grep -q 'isKeyframe: Bool' "$sender"

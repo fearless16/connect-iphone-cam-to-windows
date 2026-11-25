@@ -23,6 +23,7 @@ final class StreamSender {
     var onFrameRate: ((Double, UInt64) -> Void)?
     var onFrameSent: ((TimeInterval) -> Void)?
     var onConnectionState: ((StreamSenderConnectionState) -> Void)?
+    var onKeyFrameNeeded: (() -> Void)?
     // Keep the queue short to bound latency, but allow enough packets to absorb
     // Network.framework completion jitter. A one-packet gate measured ~30 fps
     // even when the camera was producing native 4K60.
@@ -272,6 +273,10 @@ final class StreamSender {
             guard !self.waitingForKeyFrame || isKeyframe else { return }
             guard self.pendingPackets.count < self.maxQueuedPackets else {
                 self.droppedFrameCount &+= 1
+                // A dropped frame breaks the reference chain. Stop admitting deltas
+                // and ask for an IDR instead of streaming corrupt video for up to 2 s.
+                self.waitingForKeyFrame = true
+                self.onKeyFrameNeeded?()
                 return
             }
             self.pendingPackets.append(packet)

@@ -274,6 +274,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.onClientConnected = { [weak self] in
             self?.requestKeyFrame()
         }
+        sender.onKeyFrameNeeded = { [weak self] in self?.requestKeyFrame() }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
             self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
         }

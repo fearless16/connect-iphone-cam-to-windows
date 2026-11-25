@@ -38,6 +38,15 @@ if printf '%s
   echo "resetForDiscontinuity must not cancel the connection" >&2
   exit 1
 fi
+# T1.6: queue overflow drops to the next keyframe instead of streaming corrupt deltas.
+grep -q 'onKeyFrameNeeded' "$sender"
+overflow=$(awk '
+  /guard self.pendingPackets.count < self.maxQueuedPackets else/ { in_g = 1 }
+  in_g { print }
+  in_g && /return/ { exit }
+' "$sender")
+printf '%s
+' "$overflow" | grep -q 'waitingForKeyFrame = true'
 # T1.4: a working listener is never rebuilt on a path change.
 grep -q 'guard !listenerReady else' "$sender"
 # T1.2: rebind must not wait on TIME_WAIT; retry fast and forever.

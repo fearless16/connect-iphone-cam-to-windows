@@ -50,7 +50,7 @@ passed. Report it.
 - UI updates happen on the main queue only.
 
 **R-ENG-RECOVER: Discontinuity handling** (observed)
-After any discontinuity (connect, reconnect, transport wait, encoder rebuild, relay reopen),
+After any discontinuity (connect, reconnect, transport wait, send-queue overflow, encoder rebuild, relay reopen),
 delta frames are dropped until a decoder join point arrives: an HEVC AU containing VPS+SPS+PPS+IDR.
 - Sender: `waitingForKeyFrame`; `resetForDiscontinuity` for media-only discontinuities. Encoder: forced keyframe on `onClientConnected`.
 - Receiver: `waitingForRandomAccess`. Relay: `RelayRecoveryGate`.

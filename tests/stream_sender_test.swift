@@ -67,7 +67,7 @@ func readPacket(_ fd: Int32, timeout: TimeInterval) -> Packet? {
     func u32(_ o: Int) -> UInt32 { (0..<4).reduce(UInt32(0)) { $0 | UInt32(h[h.startIndex + o + $1]) << UInt32(8 * $1) } }
     func u64(_ o: Int) -> UInt64 { (0..<8).reduce(UInt64(0)) { $0 | UInt64(h[h.startIndex + o + $1]) << UInt64(8 * $1) } }
     let size = Int(u32(17))
-    guard size <= 1024, let payload = readExact(fd, size, timeout: timeout) else { return nil }
+    guard size <= 1_000_000, let payload = readExact(fd, size, timeout: timeout) else { return nil }
     return Packet(magic: u32(0), frameNumber: u32(4), timestampUs: u64(8),
                   codec: h[h.startIndex + 16], payload: payload)
 }
@@ -136,6 +136,34 @@ check(readPacket(c7, timeout: 1) == nil, "C7 connection closed or delta delivere
 sender.send(frameNumber: 202, timestampUs: 3, codec: 0, isKeyframe: true, frame: payload("K", 3))
 check(readPacket(c7, timeout: 3)?.payload == payload("K", 3), "C7 keyframe after reset")
 close(c7)
+
+// C8 (T1.6): queue overflow must drop to the next keyframe, never to a delta.
+var keyFrameRequests = 0
+sender.onKeyFrameNeeded = { keyFrameRequests += 1 }
+guard let c8 = connectClient(deadline: 5) else { check(false, "C8 connect failed"); exit(1) }
+check(waitUntil(5) { connectedCount == expectedConnects + 2 }, "C8 onClientConnected")
+let big = Data(repeating: 0, count: 256 * 1024)
+for i in 0..<200 {
+    var f = big
+    f[0] = i == 0 ? Character("K").asciiValue! : Character("D").asciiValue!
+    f[1] = UInt8(i & 0xFF)
+    sender.send(frameNumber: UInt32(1000 + i), timestampUs: UInt64(i), codec: 0, isKeyframe: i == 0, frame: f)
+}
+check(waitUntil(5) { keyFrameRequests >= 1 }, "C8 onKeyFrameNeeded never fired")
+// Drain everything delivered so far, then offer a fresh keyframe and deltas.
+var seen: [Packet] = []
+while let p = readPacket(c8, timeout: 0.5) { seen.append(p) }
+for i in 0..<6 {
+    var f = big
+    f[0] = i == 0 ? Character("K").asciiValue! : Character("D").asciiValue!
+    sender.send(frameNumber: UInt32(5000 + i), timestampUs: UInt64(i), codec: 0, isKeyframe: i == 0, frame: f)
+}
+while let p = readPacket(c8, timeout: 1) { seen.append(p); if p.frameNumber == 5005 { break } }
+check(seen.last?.frameNumber == 5005, "C8 fresh keyframe + deltas not delivered")
+for idx in 1..<seen.count where seen[idx].frameNumber != seen[idx - 1].frameNumber + 1 {
+    check(seen[idx].payload.first == Character("K").asciiValue!, "C8 packet after a gap (frame \(seen[idx].frameNumber)) is not a keyframe")
+}
+close(c8)
 
 // C5: stop() refuses new connections.
 sender.stop()
