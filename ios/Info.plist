@@ -21,7 +21,7 @@
     <key>NSCameraUsageDescription</key>
     <string>Used to stream the camera to a connected Windows PC over USB.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Used to send the live camera stream to this PC through the iPhone USB network connection.</string>
+    <string>Used to send the live camera stream to this PC through the iPhone USB network connection, or over Wi-Fi when you turn on the Wi-Fi switch.</string>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <false/>
     <key>UISupportedExternalAccessoryProtocols</key>

@@ -1307,7 +1307,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | TODO | | |
 | T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | TODO | | optional; mini-plan first |
 | T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | TODO | | |
-| T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | TODO | | amended in STREAMER_FEATURES_PLAN.md §5 (serviceClass) |
+| T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled. Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
 | T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | SKIPPED | 2026-11-25 | superseded by T5.4 + T5.8 |
 | T3.3 | feat/wifi-discovery | O | T3.1 | G7 | TODO | | optional; mini-plan first; amended in STREAMER_FEATURES_PLAN.md §5 |
 | DC-3 | (owner) | — | T3.1 | — | TODO | | T3.2 SKIPPED |

@@ -92,6 +92,24 @@ So install Apple Devices and keep Personal Hotspot as a backup, not the first ch
 
 ---
 
+## Wi-Fi mode (optional)
+
+USB is the default and the best path. Wi-Fi is an opt-in alternative for when a
+cable is not practical.
+
+1. Put the phone and the PC on the same network.
+2. On the phone, turn on the **Wi-Fi** switch (top right). It is off by default
+   and remembers its setting. The status panel then shows
+   `WI-FI <ip>:12345 • visible to this network`.
+3. On the PC run `receiver.exe --host <ip>` with that address.
+
+Expect more latency and jitter than USB. While the switch is on, the stream is
+unauthenticated and visible to every device on that network. Turn the switch off
+when you finish: the phone then refuses Wi-Fi and cellular connections again and
+only the USB path works.
+
+---
+
 ## Troubleshooting (first things to check)
 
 | Symptom | Fix |
