@@ -70,7 +70,7 @@ Never subtract unsigned source timestamps directly. The relay timeline goes thro
 
 **R-ENG-PERF: 4K60 hot path** (observed)
 Applies to per-frame paths:
-- No disk writes (`kSaveReceivedStream` / `saveEncodedStream` stay `false`).
+- No disk writes (the receiver has none; `saveEncodedStream` stays `false`).
 - No per-frame logging: statistics are rate-limited (`frames % 120`).
 - No unbounded queues: the sender is capped at `maxQueuedPackets = 8` and drops when full.
 - No CPU pixel copies on the GPU path.

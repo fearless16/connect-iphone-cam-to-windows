@@ -11,6 +11,7 @@
 #include <chrono>
 #include <thread>
 #include <string>
+#include <atomic>
 #include <cwchar>
 #include <cstdlib>
 #include <winsock2.h>
@@ -39,7 +40,8 @@ extern "C" {
 }
 
 #define DEVICE_PORT 12345u
-static constexpr bool kSaveReceivedStream = false;
+// Set by the console control handler (Ctrl+C, Ctrl+Break, window close).
+static std::atomic<bool> g_stopRequested{false};
 
 struct DecodeTelemetry {
     bool d3d11_requested = false;
@@ -421,11 +423,19 @@ static SOCKET connect_to_device(const char* host, bool directTcp) {
     return INVALID_SOCKET;
 }
 
-// Naive blocking read-until-full.
-static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part) {
+// Limits for one logical read. A phone that is merely idle (no frame to send
+// yet) must not be treated like a stalled mid-packet transfer.
+static constexpr long kHeaderIdleTimeoutMs = 15'000;
+static constexpr long kPayloadTimeoutMs = 5'000;
+// Longest single select(); keeps Ctrl+C responsive without busy-waiting.
+static constexpr long kWaitSliceMs = 250;
+
+// Blocking read-until-full with a deadline and a stop check.
+static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part, long timeoutMs) {
     size_t got = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (got < n) {
+        if (g_stopRequested.load()) return false;
         // Wait before each read instead of imposing a short SO_RCVTIMEO on the
         // socket. A 4K HEVC packet can be large, and a brief USB scheduling
         // stall must not be treated as a broken iPhone connection.
@@ -437,14 +447,13 @@ static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part) {
             return false;
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        const long sliceMs = std::min<long>(static_cast<long>(remaining.count()), kWaitSliceMs);
         timeval timeout{};
-        timeout.tv_sec = static_cast<long>(remaining.count() / 1'000);
-        timeout.tv_usec = static_cast<long>((remaining.count() % 1'000) * 1'000);
+        timeout.tv_sec = sliceMs / 1'000;
+        timeout.tv_usec = (sliceMs % 1'000) * 1'000;
         const int ready = select(0, &readable, nullptr, nullptr, &timeout);
-        if (ready == 0) {
-            fprintf(stderr, "WARN: timed out waiting for %s\n", part);
-            return false;
-        }
+        if (ready == 0) continue;  // slice elapsed; the loop head enforces the deadline
+
         if (ready < 0) {
             fprintf(stderr, "ERROR: select %s failed: WSA=%d\n", part, WSAGetLastError());
             return false;
@@ -539,8 +548,6 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
 
 static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     const bool obsUdpRelay = relay != nullptr;
-    // Saving a 4K60 stream fills storage quickly; keep live mode disk-free.
-    FILE *out = kSaveReceivedStream ? fopen("received.h265", "wb") : nullptr;
     DecodeTelemetry decodeTelemetry{};
     GpuFramePublisher gpuPublisher{};
     AVCodecContext *dec = obsUdpRelay ? nullptr : init_decoder(decodeTelemetry);
@@ -553,7 +560,6 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         fprintf(stderr, "ERROR: FFmpeg packet/frame allocation failed\n");
         av_packet_free(&packet);
         av_frame_free(&decodedFrame);
-        if (out) fclose(out);
         if (dec) avcodec_free_context(&dec);
         return;
     }
@@ -567,7 +573,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     printf("INFO: waiting for first HEVC frame from iPhone\n");
 
     while (true) {
-        if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE, "stream header")) break;
+        if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE, "stream header", kHeaderIdleTimeoutMs)) break;
         stream_header_t h = {};
         if (!stream_header_read(hdr.data(), &h) || !stream_header_is_valid(&h)) {
             fprintf(stderr, "ERROR: invalid stream header, stream desync\n");
@@ -583,7 +589,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             fprintf(stderr, "ERROR: av_new_packet failed for %u bytes\n", h.frame_size);
             break;
         }
-        if (!read_exact(fd, packet->data, h.frame_size, "video frame")) {
+        if (!read_exact(fd, packet->data, h.frame_size, "video frame", kPayloadTimeoutMs)) {
             av_packet_unref(packet);
             break;
         }
@@ -627,7 +633,6 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         }
         previousTimestampUs = h.timestamp_us;
 
-        if (out) fwrite(packet->data, 1, h.frame_size, out);
         frames++;
 
         if (obsUdpRelay) {
@@ -684,7 +689,6 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         }
     }
 
-    if (out) fclose(out);
     av_packet_free(&packet);
     av_frame_free(&decodedFrame);
     if (dec) avcodec_free_context(&dec);
@@ -699,16 +703,36 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
     ObsUdpRelay relay;
     if (obsUdpRelay && !relay.Open(false)) return 1;
 
-    for (;;) {
+    while (!g_stopRequested.load()) {
         const SOCKET fd = connect_to_device(usbNetworkHost.c_str(), directTcp);
         if (fd != INVALID_SOCKET) {
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
             closesocket(fd);
+            if (g_stopRequested.load()) break;
             fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
         } else {
             fprintf(stderr, "INFO: retrying iPhone connection in 1 second\n");
         }
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // One second in short slices so a stop request is not delayed.
+        for (int slice = 0; slice < 10 && !g_stopRequested.load(); ++slice) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    printf("INFO: stop requested; closing OBS relay\n");
+    return 0;
+}
+
+// Ctrl+C, Ctrl+Break and closing the console window all request a clean stop.
+// The relay then writes its MPEG-TS trailer and closes before WSACleanup.
+static BOOL WINAPI console_control_handler(DWORD event) {
+    switch (event) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+            g_stopRequested.store(true);
+            return TRUE;
+        default:
+            return FALSE;
     }
 }
 
@@ -730,6 +754,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     disable_console_quick_edit();
+    SetConsoleCtrlHandler(console_control_handler, TRUE);
 
     // Keep running across app restarts, lock/unlock recovery, and USB reconnects.
     // A double-clicked receiver must wait for the iPhone instead of flashing away.

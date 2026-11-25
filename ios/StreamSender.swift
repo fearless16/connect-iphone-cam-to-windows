@@ -206,6 +206,7 @@ final class StreamSender {
             self.sentFrameCount = 0
             self.droppedFrameCount = 0
             self.sentFrameStart = ProcessInfo.processInfo.systemUptime
+            self.windowMaxQueueLatencyMs = 0
             conn.stateUpdateHandler = { [weak self, weak conn] state in
                 self?.queue.async {
                     guard let self, let conn, self.connection === conn else { return }
@@ -216,6 +217,7 @@ final class StreamSender {
                         self.sentFrameCount = 0
                         self.droppedFrameCount = 0
                         self.sentFrameStart = ProcessInfo.processInfo.systemUptime
+                        self.windowMaxQueueLatencyMs = 0
                         self.publishConnectionState(.connected)
                         self.onClientConnected?()
                         self.report("PC connected • starting video")

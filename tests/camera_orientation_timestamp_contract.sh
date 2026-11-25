@@ -58,3 +58,13 @@ grep -q 'timestamp_clock_.Rebase(timestampUs)' "$receiver"
 grep -q 'last_mux_pts_' "$receiver"
 grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
 ! grep -q 'timestampUs - first_timestamp_us_' "$receiver"
+
+# Review fix: the mach timebase is constant for the process; never query it per frame.
+grep -q 'static let machTimebase' "$streamer"
+mono_body=$(awk '
+  /private func monotonicUs\(\)/ { in_fn = 1 }
+  in_fn { print }
+  in_fn && /^    }$/ { exit }
+' "$streamer")
+! printf '%s\n' "$mono_body" | grep -q 'mach_timebase_info('
+printf '%s\n' "$mono_body" | grep -q 'Self.machTimebase'
