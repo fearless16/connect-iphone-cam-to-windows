@@ -124,3 +124,17 @@ grep -Fq 'params.serviceClass = .interactiveVideo' "$sender"
 grep -q 'var onWiFiAddress' "$sender"
 # T5.4: the sender reports whether the PC connected over Wi-Fi.
 grep -q 'onClientTransport' "$sender"
+# T5.8: link stats come from the transport counters, once per 2 s, from one
+# timer that stop() cancels. Names are the real NWConnection.DataTransferReport
+# properties (the plan had retransmittedTransportByteCount spelled differently).
+grep -q 'startDataTransferReport' "$sender"
+grep -q 'retransmittedTransportByteCount' "$sender"
+grep -q 'var onLinkStats' "$sender"
+grep -q 'DispatchSource.makeTimerSource' "$sender"
+grep -Fq 'linkStatsInterval: TimeInterval = 2' "$sender"
+stop_body=$(tr -d '\r' < "$sender" | awk '
+  /func stop\(\)/ { in_f = 1 }
+  in_f { print }
+  in_f && /^    }$/ { exit }
+')
+printf '%s\n' "$stop_body" | grep -q 'stopLinkTimer'

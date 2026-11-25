@@ -112,6 +112,7 @@ swift_test() { # TEST_SOURCE PRODUCT_SOURCE [extra swiftc flags...]
 swift_test tests/length_prefixed_hevc_test.swift ios/LengthPrefixedHEVC.swift
 swift_test tests/cmblockbuffer_hevc_test.swift ios/LengthPrefixedHEVC.swift -framework CoreMedia
 swift_test tests/stream_header_test.swift shared/StreamHeader.swift
+swift_test tests/quality_advisor_test.swift ios/QualityAdvisor.swift
 swift_test tests/stream_sender_test.swift ios/StreamSender.swift shared/StreamHeader.swift
 
 echo "== CI-only builds"

@@ -59,6 +59,7 @@ done
 
 # R-ARCH-4: pure logic units compile standalone in tests.
 only_imports R-ARCH-4 ios/LengthPrefixedHEVC.swift Foundation CoreMedia
+only_imports R-ARCH-4 ios/QualityAdvisor.swift Foundation
 for header in windows/relay_timestamp.h windows/relay_recovery.h windows/hevc_access_unit.h windows/hevc_sps.h windows/stream_timing.h; do
   for inc in $(includes "$header"); do
     case "$inc" in

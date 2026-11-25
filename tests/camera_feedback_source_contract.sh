@@ -77,4 +77,13 @@ grep -q 'streamer.setWiFiEnabled' "$view_controller"
 
 # T5.4: the preset control talks to CameraStreamer only.
 grep -q 'streamer.setPreset' "$view_controller"
+
+# T5.8: the live rate is clamped by BitrateController and shown on the phone;
+# a new preset, connection or recovery goes back to the full preset rate.
+grep -q 'sender.onLinkStats' "$streamer"
+grep -q 'bitrateController.nextBitrate' "$streamer"
+grep -Fq 'BITRATE %.1f/%.0f Mbps' "$streamer"
+grep -q 'liveBitRate ?? presetTargetBitRateLocked()' "$streamer"
+reset_calls=$(grep -c 'resetAdaptiveBitRate()' "$streamer")
+[ "$reset_calls" -ge 4 ]
 grep -q 'streamer.onPresetAvailability' "$view_controller"
