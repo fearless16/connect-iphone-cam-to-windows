@@ -19,9 +19,11 @@ other sections.
 
 1. You execute **exactly one task** (a `T` number) per session. Read `CLAUDE.md`,
    then this section, section 2, and **your task section only**. Do not read or do
-   other tasks.
+   other tasks. Phase 5 tasks (T5.x) and the amendments to T3.1 and T3.3 are in
+   [`STREAMER_FEATURES_PLAN.md`](STREAMER_FEATURES_PLAN.md): read its section 0 and
+   your task there as well.
 2. Open section 9. Every task in your task's **Depends on** list must be `DONE`
-   (merged to `main`). If your task has a **Gate**, that gate must be `APPROVED`
+   (merged to `main`); `SKIPPED` also counts as satisfied. If your task has a **Gate**, that gate must be `APPROVED`
    in section 4. If either is not true, **stop** and tell the user which one.
 3. Create your branch from the latest `main`:
    `git checkout main` then `git checkout -b <branch named in the task>`.
@@ -207,8 +209,14 @@ while it is `PENDING`.
 | G5 | Relay PTS taken from PC arrival time instead of the phone clock | Approve **only if** DC-2 shows delay growing over a session | T2.5 | PENDING |
 | G6 | Relay to OBS over loopback TCP instead of UDP (lossless, joins OBS at an IDR) | Decide after DC-2/T0.6 data. Biggest change in the plan | T2.6 | PENDING |
 | G7 | Wi-Fi exposure model. **A:** opt-in switch, off by default; when off, the phone refuses Wi-Fi and cellular connections; no authentication. **B:** A plus a pairing PIN (needs a protocol change, D3) | **A** now; B later if ever needed | T3.1, T3.3 | PENDING |
-| G8 | Wi-Fi bitrate 25 Mbps (USB stays 40 Mbps) | Approve | T3.2 | PENDING |
+| G8 | Wi-Fi bitrate 25 Mbps (USB stays 40 Mbps) | Superseded by G8′ ([STREAMER_FEATURES_PLAN.md](STREAMER_FEATURES_PLAN.md) section 4) | T3.2 | SUPERSEDED |
 | G9 | Retire `--gpu-ring` diagnostics (removes the D3D11 decode path, D1, and D10) | Approve (optional cleanup) | T4.1 | PENDING |
+| G8′ | Per-preset bitrates for 720p60 / 1080p60 / 2160p60, USB and Wi-Fi (table in STREAMER_FEATURES_PLAN.md §4) | Approve | T5.4 | PENDING |
+| G10 | 1440p60 preset scaled from 4K | Reject for now | — | PENDING |
+| G11 | Cinematic as an explicit **30 fps** exception (Apple limit: 1080p/4K at 30 fps) | Owner approved (iPhone 14 Pro) | T5.9 | APPROVED (2026-11-25) |
+| G12 | **Portrait** effect only, at the format's capped fps; rear camera, or front-camera fallback; never 4K | Owner approved, conditional on DC-4 showing support | T5.10 | APPROVED (2026-11-25) |
+| G13 | Fixed-latency playout in the receiver (USB 0 ms, Wi-Fi 80 ms default, `--latency-ms`) | Approve if DC-5b Wi-Fi jitter p99 > 17 ms | T5.6 | PENDING |
+| G14 | Automatic bitrate adaptation within a preset (floor 50%); resolution never auto-switched | Approve | T5.8 | PENDING |
 
 ---
 
@@ -256,6 +264,22 @@ Phase 3  Wi-Fi
 Phase 4  Cleanup and sign-off
   T4.1 chore/retire-gpu-ring             [G9, optional]
   T4.2 docs/soak-signoff                 (after the soak test)
+Phase 5  Streamer features (task details: STREAMER_FEATURES_PLAN.md; T3.2 superseded)
+  T5.0 diag/ios-nwerror-detail
+  T5.1 ci/xcode-26-sdk
+  T5.2 diag/ios-capability-probe         (needs T5.1)
+  T5.5 feat/receiver-resolution-follow   (no deps; can start any time)
+  ── DC-4 capability report (owner) → decide G10, G11, G12 ──
+  ── DC-5a USB vs Wi-Fi A/B (owner; needs T5.0, T3.1) ──
+  T5.4 feat/ios-quality-presets          [G8′] (needs T3.1, T5.5)
+  T5.8 feat/ios-adaptive-bitrate         [G14] (needs T5.4)
+  T5.7 feat/ios-quality-advisor          (needs T5.8)
+  ── DC-5b Wi-Fi presets and timing (owner) → decide G13 ──
+  T5.6 feat/receiver-constant-latency    [G13] (needs T5.5)
+  T5.9 feat/ios-cinematic-mode           [G11] (needs T5.4)
+  T5.10 feat/ios-portrait-effect         [G12] (needs T5.4)
+  T5.11 docs/wifi-presets-effects        (after T5.0–T5.10 and T3.3, each DONE or SKIPPED)
+  ── DC-6 final pass (owner) ──
 ```
 
 Model tier per task: **H** = Haiku is fine; **S** = use Sonnet; **O** = use Opus
@@ -1283,12 +1307,27 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | TODO | | |
 | T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | TODO | | optional; mini-plan first |
 | T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | TODO | | |
-| T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | TODO | | |
-| T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | TODO | | |
-| T3.3 | feat/wifi-discovery | O | T3.1 | G7 | TODO | | optional; mini-plan first |
-| DC-3 | (owner) | — | T3.1, T3.2 | — | TODO | | |
+| T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | TODO | | amended in STREAMER_FEATURES_PLAN.md §5 (serviceClass) |
+| T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | SKIPPED | 2026-11-25 | superseded by T5.4 + T5.8 |
+| T3.3 | feat/wifi-discovery | O | T3.1 | G7 | TODO | | optional; mini-plan first; amended in STREAMER_FEATURES_PLAN.md §5 |
+| DC-3 | (owner) | — | T3.1 | — | TODO | | T3.2 SKIPPED |
 | T4.1 | chore/retire-gpu-ring | S | T0.6 | G9 | TODO | | optional |
 | T4.2 | docs/soak-signoff | H | soak | — | TODO | | |
+| T5.0 | diag/ios-nwerror-detail | H | — | — | TODO | | details in STREAMER_FEATURES_PLAN.md |
+| T5.1 | ci/xcode-26-sdk | H | — | — | TODO | | |
+| T5.2 | diag/ios-capability-probe | S | T5.1 | — | TODO | | |
+| DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
+| DC-5a | (owner) | — | T5.0, T3.1 | — | TODO | | USB vs Wi-Fi A/B |
+| T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | TODO | | |
+| T5.5 | feat/receiver-resolution-follow | S | — | — | TODO | | |
+| T5.8 | feat/ios-adaptive-bitrate | S | T5.4 | G14 | TODO | | |
+| T5.7 | feat/ios-quality-advisor | S | T5.8 | — | TODO | | |
+| DC-5b | (owner) | — | T5.4, T5.5, T5.7, T5.8 | — | TODO | | decides G13 |
+| T5.6 | feat/receiver-constant-latency | O | T5.5, DC-5b | G13 | TODO | | |
+| T5.9 | feat/ios-cinematic-mode | O | T5.4, DC-4 | G11 | TODO | | 30 fps only |
+| T5.10 | feat/ios-portrait-effect | S | T5.4, DC-4 | G12 | TODO | | Portrait only; never 4K |
+| T5.11 | docs/wifi-presets-effects | H | T5.0–T5.10, T3.3 | — | TODO | | deps may be SKIPPED |
+| DC-6 | (owner) | — | T5.11 | — | TODO | | |
 
 ---
 
@@ -1305,3 +1344,6 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | Date | Change | By |
 |---|---|---|
 | 2026-11-25 | Initial plan from code review of `f657cdd` | Claude (Opus) |
+| 2026-11-25 | Added Phase 5 (STREAMER_FEATURES_PLAN.md): Wi-Fi presets, advisor, constant latency, Cinematic, effects. G8 → G8′; T3.2 superseded; new gates G10–G14 | Claude (Opus), at owner's request |
+| 2026-11-25 | Owner device is iPhone 14 Pro. G11 (Cinematic 30 fps) and G12 (Portrait only, front-camera fallback) approved; T5.10 renamed `feat/ios-portrait-effect` | Claude (Opus), owner decision |
+| 2026-11-25 | STREAMER_FEATURES_PLAN.md reviewed for executor clarity: identifiers verified at `2e7086b`; added executor quick start (§0), exact code shapes, contract lines and stop conditions; T5.4 now needs T5.5; T5.2 probes front cameras; SPS golden vectors embedded; rule 0.2 says SKIPPED satisfies a dependency | Claude (Opus), at owner's request |
