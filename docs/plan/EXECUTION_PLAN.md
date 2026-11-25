@@ -1271,7 +1271,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | DONE-PENDING-MERGE | 2026-11-25 | receiver link unverified locally; CI must confirm |
 | T1.10 | docs/usb-troubleshooting | H | T0.0 | — | DONE | 2026-11-25 | Docs only; facts checked against connect_to_device order |
 | DC-1 | (owner) | — | T1.1–T1.10 | — | TODO | | |
-| T2.1 | diag/receiver-timing-stats | S | T0.0 | — | TODO | | |
+| T2.1 | diag/receiver-timing-stats | S | T0.0 | — | DONE | 2026-11-25 | Merged only after branch CI green (C++ tests + link verified in CI) |
 | T2.2 | diag/ios-latency-telemetry | S | T1.6 | — | TODO | | |
 | T2.3 | docs/obs-latency-and-av-sync | H | T2.1, T2.2 | — | TODO | | |
 | DC-2 | (owner) | — | T2.1–T2.3 | — | TODO | | decides G3/G5/G6 |

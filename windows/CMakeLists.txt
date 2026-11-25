@@ -18,6 +18,10 @@ if(BUILD_TESTING)
     target_include_directories(relay_recovery_gate_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME relay_recovery_gate_test COMMAND relay_recovery_gate_test)
 
+    add_executable(stream_timing_test ../tests/stream_timing_test.cpp)
+    target_include_directories(stream_timing_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME stream_timing_test COMMAND stream_timing_test)
+
     add_executable(hevc_access_unit_test ../tests/hevc_access_unit_test.cpp)
     target_include_directories(hevc_access_unit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME hevc_access_unit_test COMMAND hevc_access_unit_test)

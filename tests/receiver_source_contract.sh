@@ -56,3 +56,13 @@ grep -q -- '--host' "$receiver"
 grep -q 'requireUsbInterface' "$receiver"
 grep -q 'direct TCP' "$receiver"
 sh "$(dirname "$0")/obs_udp_relay_contract.sh" "$receiver"
+
+# T2.1: arrival-timing stats and gate drops counted apart from write failures.
+grep -q '#include "stream_timing.h"' "$receiver"
+grep -q 'timing.BeginSession()' "$receiver"
+grep -q 'timing.OnFrame(h.timestamp_us, arrivalUs)' "$receiver"
+grep -q 'timing.ResetWindow()' "$receiver"
+grep -q 'relayGateDrop=%llu' "$receiver"
+grep -q 'extraDelayMs=%.1f maxExtraMs=%.1f maxGapMs=%.1f burst=%u skewMs=%.1f' "$receiver"
+grep -q 'enum class RelayWriteResult' "$receiver"
+grep -q 'RelayWriteResult::GateDrop' "$receiver"
