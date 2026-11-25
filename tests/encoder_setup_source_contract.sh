@@ -141,3 +141,9 @@ grep -q 'thermalStateDidChangeNotification' "$source"
 grep -q 'systemPressureState' "$source"
 grep -q 'thermalTelemetry' "$source"
 grep -q 'pressureTelemetry' "$source"
+
+# T2.2: phone latency telemetry (encode and queue latency).
+grep -q 'LATENCY encode' "$source"
+grep -q 'synchronizationClock' "$source"
+grep -q 'CMClockGetHostTimeClock' "$source"
+grep -q 'onQueueLatency' "$source"

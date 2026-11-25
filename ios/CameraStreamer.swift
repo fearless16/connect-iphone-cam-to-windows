@@ -81,6 +81,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var encoderDropCount: UInt64 = 0
     private var malformedAccessUnitDropCount: UInt64 = 0
     private var transportDropCount: UInt64 = 0
+    // T2.2: encode latency = now - capture PTS (host clock); queue latency comes from StreamSender.
+    private var windowMaxEncodeLatencyMs = 0.0
+    private var shownEncodeLatencyMs = 0.0
+    private var shownQueueLatencyMs = 0.0
     private var linkDropCount: UInt64 = 0
     private var lastLinkDropReason = "none"
     private static let linkTimeFormatter: DateFormatter = {
@@ -284,6 +288,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         sender.onKeyFrameNeeded = { [weak self] in self?.requestKeyFrame() }
         sender.onDisconnect = { [weak self] reason in
             self?.recordLinkDrop(reason: reason)
+        }
+        sender.onQueueLatency = { [weak self] maxMs in
+            self?.recordQueueLatency(maxMs)
         }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
             self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
@@ -670,6 +677,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         usbFPS = 0
         captureDropCount = 0
         transportDropCount = 0
+        windowMaxEncodeLatencyMs = 0
+        shownEncodeLatencyMs = 0
+        shownQueueLatencyMs = 0
         didReceiveFirstCameraFrame = false
         telemetryLock.unlock()
     }
@@ -693,12 +703,20 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func recordEncodedFrame(_ pts: CMTime) {
+        // Capture PTS and the session clock are on the same host timebase.
+        let now = CMClockGetTime(session.synchronizationClock ?? CMClockGetHostTimeClock())
+        let latencyMs = CMTimeGetSeconds(CMTimeSubtract(now, pts)) * 1000.0
         telemetryLock.lock()
+        if latencyMs.isFinite { windowMaxEncodeLatencyMs = max(windowMaxEncodeLatencyMs, max(0, latencyMs)) }
         if !encoderFirstPTS.isValid { encoderFirstPTS = pts }
         encoderFrameCount &+= 1
         let elapsed = CMTimeGetSeconds(CMTimeSubtract(pts, encoderFirstPTS))
         if elapsed > 0 { encoderFPS = Double(encoderFrameCount - 1) / elapsed }
         let shouldPublish = encoderFrameCount % 30 == 0
+        if shouldPublish {
+            shownEncodeLatencyMs = windowMaxEncodeLatencyMs
+            windowMaxEncodeLatencyMs = 0
+        }
         telemetryLock.unlock()
         if shouldPublish { publishDiagnostics() }
     }
@@ -730,6 +748,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         publishDiagnostics()
     }
 
+    private func recordQueueLatency(_ maxMs: Double) {
+        telemetryLock.lock()
+        shownQueueLatencyMs = maxMs
+        telemetryLock.unlock()
+        publishDiagnostics()
+    }
+
     private func recordLinkDrop(reason: String) {
         let time = Self.linkTimeFormatter.string(from: Date())
         telemetryLock.lock()
@@ -751,11 +776,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         telemetryLock.lock()
         diagnosticsRevision &+= 1
         let revision = diagnosticsRevision
-        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • HEVC %llu • malformed %llu • transport %llu\nLINK reconnects %llu • last: %@",
+        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • HEVC %llu • malformed %llu • transport %llu\nLATENCY encode %.0f ms • queue %.0f ms (max per 1 s)\nLINK reconnects %llu • last: %@",
                           activeFormatTelemetry, thermalTelemetry, pressureTelemetry,
                           sensorFPS, encoderFPS, usbFPS,
                           captureDropCount, encoderDropCount,
                           malformedAccessUnitDropCount, transportDropCount,
+                          shownEncodeLatencyMs, shownQueueLatencyMs,
                           linkDropCount, lastLinkDropReason)
         telemetryLock.unlock()
         DispatchQueue.main.async { [weak self] in

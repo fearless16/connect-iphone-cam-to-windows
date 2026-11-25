@@ -91,3 +91,8 @@ awk '
            reset_line < generation_line && generation_line < error_line)
   }
 ' "$sender"
+
+# T2.2: queue latency is measured from enqueue time to send completion.
+grep -q 'enqueuedAt' "$sender"
+grep -q 'var onQueueLatency' "$sender"
+grep -q 'windowMaxQueueLatencyMs' "$sender"
