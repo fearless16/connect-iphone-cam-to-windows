@@ -1252,7 +1252,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | Task | Branch | Model | Depends on | Gate | Status | Date | Notes |
 |---|---|---|---|---|---|---|---|
 | T0.0 | main (owner) | — | — | — | DONE | 2026-11-25 | committed on main locally (not pushed) |
-| T0.1 | ci/run-on-pull-requests | H | T0.0 | — | TODO | | |
+| T0.1 | ci/run-on-pull-requests | H | T0.0 | — | DONE | 2026-11-25 | Merged to main locally; first PR run confirms trigger |
 | T0.2 | chore/docker-check-gate | H | T0.0 | G2 | TODO | | |
 | T0.3 | chore/msys2-local-build | H | T0.0 | — | TODO | | |
 | T0.4 | feat/receiver-host-flag | S | T0.0 | — | TODO | | |
