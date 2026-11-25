@@ -1313,7 +1313,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | DC-3 | (owner) | — | T3.1 | — | TODO | | T3.2 SKIPPED |
 | T4.1 | chore/retire-gpu-ring | S | T0.6 | G9 | TODO | | optional |
 | T4.2 | docs/soak-signoff | H | soak | — | TODO | | |
-| T5.0 | diag/ios-nwerror-detail | H | — | — | TODO | | details in STREAMER_FEATURES_PLAN.md |
+| T5.0 | diag/ios-nwerror-detail | H | — | — | DONE-PENDING-MERGE | 2026-11-25 | Swift build + stream_sender_test unverified locally; CI macOS must confirm |
 | T5.1 | ci/xcode-26-sdk | H | — | — | TODO | | |
 | T5.2 | diag/ios-capability-probe | S | T5.1 | — | TODO | | |
 | DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
