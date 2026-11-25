@@ -22,6 +22,37 @@ grep -q 'listenerRetryAttempt' "$sender"
 grep -q 'NWPathMonitor' "$sender"
 grep -q 'func restartListening' "$sender"
 grep -q 'USB network path changed' "$sender"
+# T1.3: media-only discontinuity keeps the PC connection.
+grep -q 'func resetForDiscontinuity' "$sender"
+reset_body=$(awk '
+  /func resetForDiscontinuity/ { in_f = 1 }
+  in_f { print }
+  in_f && /^    }$/ { exit }
+' "$sender")
+printf '%s
+' "$reset_body" | grep -q 'waitingForKeyFrame = true'
+printf '%s
+' "$reset_body" | grep -q 'pendingPackets.removeAll'
+if printf '%s
+' "$reset_body" | grep -q 'cancel()'; then
+  echo "resetForDiscontinuity must not cancel the connection" >&2
+  exit 1
+fi
+# T1.6: queue overflow drops to the next keyframe instead of streaming corrupt deltas.
+grep -q 'onKeyFrameNeeded' "$sender"
+overflow=$(awk '
+  /guard self.pendingPackets.count < self.maxQueuedPackets else/ { in_g = 1 }
+  in_g { print }
+  in_g && /return/ { exit }
+' "$sender")
+printf '%s
+' "$overflow" | grep -q 'waitingForKeyFrame = true'
+# T1.4: a working listener is never rebuilt on a path change.
+grep -q 'guard !listenerReady else' "$sender"
+# T1.2: rebind must not wait on TIME_WAIT; retry fast and forever.
+grep -q 'allowLocalEndpointReuse = true' "$sender"
+grep -q 'noDelay = true' "$sender"
+grep -q 'min(2.0, 0.25 \* pow(2.0' "$sender"
 
 # A transient Network.framework wait is a transport discontinuity: stop frame
 # admission, discard queued delta frames, and require a fresh random-access

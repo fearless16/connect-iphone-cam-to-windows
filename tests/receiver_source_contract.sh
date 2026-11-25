@@ -6,6 +6,8 @@ receiver="$1"
 # The receiver must be a durable USB-network bridge, not a console program
 # that exits before the user opens the iPhone app.
 grep -q 'WSAStartup' "$receiver"
+# T1.9: a click in the console must not freeze the relay.
+grep -q 'ENABLE_QUICK_EDIT_MODE' "$receiver"
 grep -q 'discover_iphone_usb_host' "$receiver"
 grep -q 'bind_iphone_usb_interface' "$receiver"
 grep -q 'IPHONE_CAMERA_HOST' "$receiver"

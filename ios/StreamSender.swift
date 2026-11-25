@@ -23,6 +23,7 @@ final class StreamSender {
     var onFrameRate: ((Double, UInt64) -> Void)?
     var onFrameSent: ((TimeInterval) -> Void)?
     var onConnectionState: ((StreamSenderConnectionState) -> Void)?
+    var onKeyFrameNeeded: (() -> Void)?
     // Keep the queue short to bound latency, but allow enough packets to absorb
     // Network.framework completion jitter. A one-packet gate measured ~30 fps
     // even when the camera was producing native 4K60.
@@ -45,6 +46,7 @@ final class StreamSender {
     // previously-ready listener is never left bound to the old interface.
     private let pathMonitor = NWPathMonitor()
     private var wiredPathSignature: String?
+    private var listenerReady = false
 
     init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -78,12 +80,25 @@ final class StreamSender {
             self.sendInFlight = false
             self.pendingPackets.removeAll(keepingCapacity: true)
             let oldListener = self.listener
+            self.listenerReady = false
             self.listener = nil
             oldListener?.cancel()
             self.listenerRetryAttempt = 0
             self.publishConnectionState(.waiting)
             self.report(reason)
             self.startOnQueue()
+        }
+    }
+
+    /// Media discontinuity (camera or encoder rebuilt) without a transport fault.
+    /// Keep the PC connection; drop queued deltas and wait for a fresh IDR.
+    func resetForDiscontinuity(reason: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pendingPackets.removeAll(keepingCapacity: true)
+            self.waitingForKeyFrame = true
+            self.sendGeneration &+= 1
+            self.report(reason)
         }
     }
 
@@ -104,13 +119,26 @@ final class StreamSender {
         let signature = "\(status):\(wiredInterfaces)"
         defer { wiredPathSignature = signature }
         guard let previous = wiredPathSignature, previous != signature, desiredRunning else { return }
+        // A ready listener is bound to the wildcard address and keeps accepting on
+        // interfaces that appear later. Never drop a working PC connection because
+        // Wi-Fi or cellular changed; only rebuild a listener that is not ready.
+        guard !listenerReady else {
+            print("SENDER: network path changed; listener still ready")
+            return
+        }
         restartListening(reason: "USB network path changed • rebinding listener")
     }
 
     private func startOnQueue() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard listener == nil else { return }
-        let params = NWParameters.tcp
+        let tcpOptions = NWProtocolTCP.Options()
+        // Push each frame out immediately; Nagle would hold back a frame's tail.
+        tcpOptions.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcpOptions)
+        // restartListening closes the PC connection server-side, leaving port
+        // 12345 in TIME_WAIT. Without reuse the rebind fails and backs off ~30 s.
+        params.allowLocalEndpointReuse = true
         let newListener: NWListener
         do {
             newListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
@@ -120,12 +148,14 @@ final class StreamSender {
             scheduleRestart()
             return
         }
+        listenerReady = false
         listener = newListener
         newListener.stateUpdateHandler = { [weak self, weak newListener] state in
             guard let self, let newListener else { return }
             switch state {
             case .ready:
                 guard self.listener === newListener else { return }
+                self.listenerReady = true
                 self.listenerRetryAttempt = 0
                 self.publishConnectionState(.waiting)
                 self.report("USB stream service ready")
@@ -134,6 +164,7 @@ final class StreamSender {
                 self.report("USB listener waiting: \(error.localizedDescription)")
             case .failed(let error):
                 guard self.listener === newListener else { return }
+                self.listenerReady = false
                 self.publishConnectionState(.failed)
                 self.report("USB listener failed: \(error.localizedDescription)")
                 self.connection?.cancel()
@@ -146,6 +177,7 @@ final class StreamSender {
                 self.scheduleRestart()
             case .cancelled:
                 guard self.listener === newListener else { return }
+                self.listenerReady = false
                 self.listener = nil
                 self.publishConnectionState(self.desiredRunning ? .waiting : .disconnected)
                 self.report("USB listener stopped")
@@ -210,7 +242,7 @@ final class StreamSender {
     private func scheduleRestart() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard desiredRunning, listener == nil else { return }
-        let delay = min(30.0, pow(2.0, Double(listenerRetryAttempt)))
+        let delay = min(2.0, 0.25 * pow(2.0, Double(listenerRetryAttempt)))
         listenerRetryAttempt = min(listenerRetryAttempt + 1, 5)
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.desiredRunning, self.listener == nil else { return }
@@ -241,6 +273,10 @@ final class StreamSender {
             guard !self.waitingForKeyFrame || isKeyframe else { return }
             guard self.pendingPackets.count < self.maxQueuedPackets else {
                 self.droppedFrameCount &+= 1
+                // A dropped frame breaks the reference chain. Stop admitting deltas
+                // and ask for an IDR instead of streaming corrupt video for up to 2 s.
+                self.waitingForKeyFrame = true
+                self.onKeyFrameNeeded?()
                 return
             }
             self.pendingPackets.append(packet)
@@ -260,6 +296,7 @@ final class StreamSender {
             self?.sendInFlight = false
             self?.pendingPackets.removeAll(keepingCapacity: true)
             self?.listener?.cancel()
+            self?.listenerReady = false
             self?.listener = nil
             self?.publishConnectionState(.disconnected)
         }

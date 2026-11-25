@@ -22,7 +22,7 @@ for source_contract in \
   grep -q "tests/${source_contract}" "$workflow"
 done
 
-for runtime_test in length_prefixed_hevc_test cmblockbuffer_hevc_test; do
+for runtime_test in length_prefixed_hevc_test cmblockbuffer_hevc_test stream_sender_test; do
   grep -q "tests/${runtime_test}.swift" "$workflow"
   grep -q "/tmp/${runtime_test}" "$workflow"
 done
