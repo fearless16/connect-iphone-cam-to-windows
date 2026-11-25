@@ -289,7 +289,7 @@ static bool finish_nonblocking_connect(SOCKET socket) {
                       reinterpret_cast<char*>(&soError), &soErrorSize) == 0 && soError == 0;
 }
 
-static SOCKET connect_tcp(const char* host) {
+static SOCKET connect_tcp(const char* host, bool requireUsbInterface) {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -307,7 +307,7 @@ static SOCKET connect_tcp(const char* host) {
         // impossible and unnecessarily couples the fallback to tethering.
         const bool loopbackForward = item->ai_family == AF_INET &&
             ntohl(reinterpret_cast<const sockaddr_in*>(item->ai_addr)->sin_addr.s_addr) == INADDR_LOOPBACK;
-        if (!loopbackForward &&
+        if (requireUsbInterface && !loopbackForward &&
             (item->ai_family != AF_INET || !bind_iphone_usb_interface(candidate, host))) {
             closesocket(candidate);
             continue;
@@ -334,7 +334,13 @@ static SOCKET connect_tcp(const char* host) {
         closesocket(candidate);
     }
     freeaddrinfo(results);
-    if (socket != INVALID_SOCKET) printf("INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
+    if (socket != INVALID_SOCKET) {
+        if (requireUsbInterface) {
+            printf("INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
+        } else {
+            printf("INFO: connected to iPhone at %s:%u (direct TCP)\n", host, DEVICE_PORT);
+        }
+    }
     return socket;
 }
 
@@ -366,7 +372,14 @@ static std::string discover_iphone_usb_host() {
     return {};
 }
 
-static SOCKET connect_to_device(const char* usbNetworkHost) {
+static SOCKET connect_to_device(const char* host, bool directTcp) {
+    if (directTcp) {
+        const SOCKET direct = connect_tcp(host, false);
+        if (direct == INVALID_SOCKET) {
+            fprintf(stderr, "WARN: direct TCP connect to %s:%u failed\n", host, DEVICE_PORT);
+        }
+        return direct;
+    }
     // Native Apple Mobile Device Service/usbmux is the preferred USB path.
     // It does not rely on iPhone Personal Hotspot exposing an inbound port.
     usbmuxd_device_info_t *list = nullptr;
@@ -396,7 +409,7 @@ static SOCKET connect_to_device(const char* usbNetworkHost) {
 
     // Personal Hotspot over USB remains a useful fallback when AMDS has not
     // enumerated the device yet.
-    const SOCKET tcpSocket = connect_tcp(usbNetworkHost);
+    const SOCKET tcpSocket = connect_tcp(host, true);
     if (tcpSocket != INVALID_SOCKET) return tcpSocket;
     fprintf(stderr, "ERROR: no iPhone USB transport available (AMDS/usbmux or USB network)\n");
     return INVALID_SOCKET;
@@ -656,7 +669,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
            static_cast<unsigned long long>(frames));
 }
 
-static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost) {
+static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, bool directTcp) {
     // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
     // transport-stream continuity counters and the OBS-facing timestamp domain.
     // This helper also guarantees the relay closes while Winsock is still live.
@@ -664,7 +677,7 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost) {
     if (obsUdpRelay && !relay.Open(false)) return 1;
 
     for (;;) {
-        const SOCKET fd = connect_to_device(usbNetworkHost.c_str());
+        const SOCKET fd = connect_to_device(usbNetworkHost.c_str(), directTcp);
         if (fd != INVALID_SOCKET) {
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
             closesocket(fd);
@@ -702,28 +715,41 @@ int main(int argc, char** argv) {
     // behavior so users do not have to remember a command-line switch.
     bool obsUdpRelay = true;
     const char* explicitHost = nullptr;
+    const char* directHost = nullptr;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--obs-udp") == 0) {
             obsUdpRelay = true;
         } else if (std::strcmp(argv[index], "--gpu-ring") == 0) {
             // Retain the old diagnostic publisher only for development.
             obsUdpRelay = false;
+        } else if (std::strcmp(argv[index], "--host") == 0) {
+            if (index + 1 >= argc) {
+                fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--host <iPhone address>] [iPhone USB host]\n");
+                return 2;
+            }
+            directHost = argv[++index];
         } else if (!explicitHost) {
             explicitHost = argv[index];
         } else {
-            fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [iPhone USB host]\n");
+            fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--host <iPhone address>] [iPhone USB host]\n");
             return 2;
         }
     }
-    const std::string discoveredHost = discover_iphone_usb_host();
-    const std::string usbNetworkHost = explicitHost ? explicitHost :
+    const bool directTcp = directHost != nullptr;
+    const std::string discoveredHost = directTcp ? std::string() : discover_iphone_usb_host();
+    const std::string usbNetworkHost = directTcp ? directHost : explicitHost ? explicitHost :
         (environmentHost && *environmentHost ? environmentHost :
          (discoveredHost.empty() ? "172.20.10.1" : discoveredHost));
     printf("INFO: iPhone Camera USB receiver build=%s\n",
            obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
-    printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
-           usbNetworkHost.c_str(), DEVICE_PORT);
-    const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost);
+    if (directTcp) {
+        printf("INFO: iPhone Camera receiver started; direct TCP host=%s port=%u\n",
+               usbNetworkHost.c_str(), DEVICE_PORT);
+    } else {
+        printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
+               usbNetworkHost.c_str(), DEVICE_PORT);
+    }
+    const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost, directTcp);
     WSACleanup();
     return receiverStatus;
 }
