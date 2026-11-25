@@ -208,15 +208,15 @@ while it is `PENDING`.
 | G4 | Pause HEVC encoding while no PC is connected (preview stays live) | Approve. Less heat, fewer thermal interruptions | T2.7 | PENDING |
 | G5 | Relay PTS taken from PC arrival time instead of the phone clock | Approve **only if** DC-2 shows delay growing over a session | T2.5 | PENDING |
 | G6 | Relay to OBS over loopback TCP instead of UDP (lossless, joins OBS at an IDR) | Decide after DC-2/T0.6 data. Biggest change in the plan | T2.6 | PENDING |
-| G7 | Wi-Fi exposure model. **A:** opt-in switch, off by default; when off, the phone refuses Wi-Fi and cellular connections; no authentication. **B:** A plus a pairing PIN (needs a protocol change, D3) | **A** now; B later if ever needed | T3.1, T3.3 | PENDING |
+| G7 | Wi-Fi exposure model. **A:** opt-in switch, off by default; when off, the phone refuses Wi-Fi and cellular connections; no authentication. **B:** A plus a pairing PIN (needs a protocol change, D3) | **A** now; B later if ever needed | T3.1, T3.3 | APPROVED (2026-11-26, option A) |
 | G8 | Wi-Fi bitrate 25 Mbps (USB stays 40 Mbps) | Superseded by G8′ ([STREAMER_FEATURES_PLAN.md](STREAMER_FEATURES_PLAN.md) section 4) | T3.2 | SUPERSEDED |
 | G9 | Retire `--gpu-ring` diagnostics (removes the D3D11 decode path, D1, and D10) | Approve (optional cleanup) | T4.1 | PENDING |
-| G8′ | Per-preset bitrates for 720p60 / 1080p60 / 2160p60, USB and Wi-Fi (table in STREAMER_FEATURES_PLAN.md §4) | Approve | T5.4 | PENDING |
+| G8′ | Per-preset bitrates for 720p60 / 1080p60 / 2160p60, USB and Wi-Fi (table in STREAMER_FEATURES_PLAN.md §4) | Approve | T5.4 | APPROVED (2026-11-26) |
 | G10 | 1440p60 preset scaled from 4K | Reject for now | — | PENDING |
 | G11 | Cinematic as an explicit **30 fps** exception (Apple limit: 1080p/4K at 30 fps) | Owner approved (iPhone 14 Pro) | T5.9 | APPROVED (2026-11-25) |
 | G12 | **Portrait** effect only, at the format's capped fps; rear camera, or front-camera fallback; never 4K | Owner approved, conditional on DC-4 showing support | T5.10 | APPROVED (2026-11-25) |
 | G13 | Fixed-latency playout in the receiver (USB 0 ms, Wi-Fi 80 ms default, `--latency-ms`) | Approve if DC-5b Wi-Fi jitter p99 > 17 ms | T5.6 | PENDING |
-| G14 | Automatic bitrate adaptation within a preset (floor 50%); resolution never auto-switched | Approve | T5.8 | PENDING |
+| G14 | Automatic bitrate adaptation within a preset (floor 50%); resolution never auto-switched | Approve | T5.8 | APPROVED (2026-11-26) |
 
 ---
 
