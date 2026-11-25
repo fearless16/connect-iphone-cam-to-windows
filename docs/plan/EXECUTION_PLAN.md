@@ -1258,7 +1258,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T0.4 | feat/receiver-host-flag | S | T0.0 | — | TODO | | |
 | T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | TODO | | |
 | T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | TODO | | |
-| T0.7 | test/ios-sender-socket-test | S | T0.1 | — | TODO | | |
+| T0.7 | test/ios-sender-socket-test | S | T0.1 | — | DONE-PENDING-MERGE | 2026-11-25 | Swift test unverified locally; CI macOS must confirm |
 | T0.8 | chore/docker-receiver-cross-build | O | T0.2 | G2 | TODO | | optional |
 | T1.1 | diag/ios-disconnect-reasons | S | T0.0 | — | TODO | | |
 | T1.2 | fix/ios-listener-reuse | S | T0.7 | — | TODO | | |

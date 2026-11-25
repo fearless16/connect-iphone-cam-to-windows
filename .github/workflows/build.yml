@@ -41,6 +41,11 @@ jobs:
             -o /tmp/stream_header_test
           /tmp/stream_header_test
 
+      - name: Test StreamSender over real sockets
+        run: |
+          xcrun swiftc -swift-version 5 ios/StreamSender.swift shared/StreamHeader.swift \n            tests/stream_sender_test.swift -o /tmp/stream_sender_test
+          /tmp/stream_sender_test
+
       - name: Build unsigned app
         run: |
           xcodebuild clean build \
