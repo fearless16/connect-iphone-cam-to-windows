@@ -1314,7 +1314,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T4.1 | chore/retire-gpu-ring | S | T0.6 | G9 | TODO | | optional |
 | T4.2 | docs/soak-signoff | H | soak | — | TODO | | |
 | T5.0 | diag/ios-nwerror-detail | H | — | — | TODO | | details in STREAMER_FEATURES_PLAN.md |
-| T5.1 | ci/xcode-26-sdk | H | — | — | TODO | | |
+| T5.1 | ci/xcode-26-sdk | H | — | — | DONE-PENDING-MERGE | 2026-11-25 | CI not run (owner: CI is slow). Unverified: runner SDK is 26 on macos-15 (else switch to macos-26); API-name step output still to be copied for T5.9/T5.10 |
 | T5.2 | diag/ios-capability-probe | S | T5.1 | — | TODO | | |
 | DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
 | DC-5a | (owner) | — | T5.0, T3.1 | — | TODO | | USB vs Wi-Fi A/B |

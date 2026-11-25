@@ -34,6 +34,7 @@ run "architecture boundaries" sh tests/architecture_boundary_contract.sh
 run "protocol parity" sh tests/protocol_parity_contract.sh
 run "test registry" sh tests/test_registry_contract.sh
 run "windows CI contract" sh tests/windows_ci_contract.sh .github/workflows/build.yml
+run "iOS CI contract" sh tests/ios_ci_contract.sh .github/workflows/build.yml
 
 echo "== iOS source contracts"
 run "length-prefixed HEVC" sh tests/length_prefixed_hevc_source_contract.sh
