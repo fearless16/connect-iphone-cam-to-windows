@@ -21,6 +21,7 @@
 
 #include "gpu_frame_publisher.h"
 #include "hevc_access_unit.h"
+#include "hevc_sps.h"
 #include "relay_recovery.h"
 #include "relay_timestamp.h"
 #include "stream_timing.h"
@@ -82,8 +83,8 @@ public:
         }
         stream_->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
         stream_->codecpar->codec_id = AV_CODEC_ID_HEVC;
-        stream_->codecpar->width = 3840;
-        stream_->codecpar->height = 2160;
+        stream_->codecpar->width = width_;
+        stream_->codecpar->height = height_;
         stream_->avg_frame_rate = AVRational{60, 1};
         AVDictionary* options = nullptr;
         av_dict_set(&options, "pat_period", "0.1", 0);
@@ -117,6 +118,26 @@ public:
     RelayWriteResult Write(const AVPacket& source, uint64_t timestampUs,
                            const HevcAccessUnitInfo& accessUnit) {
         bool reopenedForThisWrite = false;
+        // The stream size can change between sessions (quality presets). Re-read
+        // it from the SPS only at join points (about every 2 s): no allocation,
+        // and a log line only when the size actually changes.
+        if (accessUnit.IsDecoderJoinPoint()) {
+            int w = 0;
+            int h = 0;
+            if (HevcAccessUnitDimensions(source.data, static_cast<size_t>(source.size), &w, &h) &&
+                (w != width_ || h != height_)) {
+                width_ = w;
+                height_ = h;
+                printf("INFO: stream size %dx%d\n", w, h);
+                if (!Open(true)) {
+                    // Retry on the next join point through the recovery gate,
+                    // which reopens with the size recorded above.
+                    recovery_gate_.OnReopenFailure();
+                    next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    return RelayWriteResult::Failed;
+                }
+            }
+        }
         const RelayRecoveryAction action = recovery_gate_.BeforeWrite(
             accessUnit.IsDecoderJoinPoint());
         if (action == RelayRecoveryAction::Drop) return RelayWriteResult::GateDrop;
@@ -211,6 +232,8 @@ private:
     AVFormatContext* context_ = nullptr;
     AVStream* stream_ = nullptr;
     bool header_written_ = false;
+    int width_ = 3840;
+    int height_ = 2160;
     AVRational muxer_time_base_{1, 90'000};
     RelayTimestampClock timestamp_clock_{};
     RelayRecoveryGate recovery_gate_{};

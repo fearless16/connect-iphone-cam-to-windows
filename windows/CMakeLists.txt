@@ -25,6 +25,10 @@ if(BUILD_TESTING)
     add_executable(hevc_access_unit_test ../tests/hevc_access_unit_test.cpp)
     target_include_directories(hevc_access_unit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME hevc_access_unit_test COMMAND hevc_access_unit_test)
+
+    add_executable(hevc_sps_test ../tests/hevc_sps_test.cpp)
+    target_include_directories(hevc_sps_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME hevc_sps_test COMMAND hevc_sps_test)
 endif()
 
 # ---- FFmpeg (install via vcpkg: `vcpkg install ffmpeg`) ----

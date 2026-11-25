@@ -163,6 +163,11 @@ jobs:
           ./hevc_access_unit_test.exe
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/hevc_sps_test.cpp" \
+            -o hevc_sps_test.exe
+          ./hevc_sps_test.exe
+          g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
             "${{ github.workspace }}/tests/stream_timing_test.cpp" \
             -o stream_timing_test.exe
           ./stream_timing_test.exe
