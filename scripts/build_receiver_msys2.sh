@@ -1,11 +1,11 @@
 #!/bin/sh
 # Build receiver.exe and run the portable C++ tests exactly like CI
-# (.github/workflows/build.yml). Run from the MSYS2 MINGW64 shell.
+# (.github/workflows/build.yml). Run from the MSYS2 UCRT64 shell.
 # Keep the g++ lines identical to build.yml; only output paths differ.
 set -eu
 
-if [ "${MSYSTEM:-}" != "MINGW64" ]; then
-    echo "Run this from the MSYS2 MINGW64 shell (MSYSTEM=${MSYSTEM:-unset})." >&2
+if [ "${MSYSTEM:-}" != "UCRT64" ]; then
+    echo "Run this from the MSYS2 UCRT64 shell (MSYSTEM=${MSYSTEM:-unset})." >&2
     exit 1
 fi
 

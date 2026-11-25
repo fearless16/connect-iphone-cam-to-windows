@@ -48,7 +48,11 @@ jobs:
 
       - name: Test StreamSender over real sockets
         run: |
-          xcrun swiftc -swift-version 5 ios/StreamSender.swift shared/StreamHeader.swift \n            tests/stream_sender_test.swift -o /tmp/stream_sender_test
+          # Top-level test code is only legal in a file named main.swift.
+          mkdir -p /tmp/stream_sender_src
+          cp tests/stream_sender_test.swift /tmp/stream_sender_src/main.swift
+          xcrun swiftc -swift-version 5 ios/StreamSender.swift shared/StreamHeader.swift \
+            /tmp/stream_sender_src/main.swift -o /tmp/stream_sender_test
           /tmp/stream_sender_test
 
       - name: Build unsigned app
@@ -114,12 +118,12 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-ffmpeg
-            mingw-w64-x86_64-libusbmuxd
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-libusbmuxd
             git
             make
 

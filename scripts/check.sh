@@ -97,7 +97,14 @@ swift_test() { # TEST_SOURCE PRODUCT_SOURCE [extra swiftc flags...]
     skip "$test_source" "needs macOS + Xcode (CI ios job runs it)"
     return
   fi
-  run "$test_source" sh -c "xcrun swiftc -swift-version 5 \"$product\" \"$test_source\" $* -o \"$tmp/$name\" && \"$tmp/$name\""
+  # Top-level test code is only legal in a file named main.swift; @main tests are not.
+  src="$test_source"
+  if ! grep -q '^@main' "$test_source"; then
+    mkdir -p "$tmp/$name.src"
+    cp "$test_source" "$tmp/$name.src/main.swift"
+    src="$tmp/$name.src/main.swift"
+  fi
+  run "$test_source" sh -c "xcrun swiftc -swift-version 5 \"$product\" \"$src\" $* -o \"$tmp/$name\" && \"$tmp/$name\""
 }
 swift_test tests/length_prefixed_hevc_test.swift ios/LengthPrefixedHEVC.swift
 swift_test tests/cmblockbuffer_hevc_test.swift ios/LengthPrefixedHEVC.swift -framework CoreMedia
