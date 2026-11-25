@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(protocol_selftest ../tests/protocol_selftest.cpp)
+    target_include_directories(protocol_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../protocol)
+    add_test(NAME protocol_selftest COMMAND protocol_selftest)
+
     add_executable(relay_timestamp_clock_test ../tests/relay_timestamp_clock_test.cpp)
     target_include_directories(relay_timestamp_clock_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME relay_timestamp_clock_test COMMAND relay_timestamp_clock_test)

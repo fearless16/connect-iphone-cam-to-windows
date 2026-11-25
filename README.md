@@ -14,9 +14,13 @@ ios/        Swift app — capture + HEVC encode + TCP over USB network
 windows/    C++ receiver + OBS UDP relay; legacy prototype is source-only
 shared/     StreamHeader.swift (mirrors the C protocol)
 protocol/   stream_protocol.h (single source of truth for the wire format)
-docs/       architecture.md, QUICKSTART.md
-scripts/    build helpers
+docs/       architecture.md, QUICKSTART.md, ENGINEERING_RULES.md
+scripts/    build helpers; check.sh runs every local quality gate
+tests/      runtime tests and source contracts (all wired into CI)
 ```
+
+Contributors and AI agents: start with `CLAUDE.md`, and run `sh scripts/check.sh`
+before submitting a change.
 
 ## How to build (full beginner steps)
 Read **`docs/QUICKSTART.md`** — it lists every click and command for both Mac and Windows.

@@ -4,9 +4,17 @@
 
 #include "stream_protocol.h"
 
+// Shared golden vector: tests/stream_header_test.swift asserts the same bytes
+// for the Swift mirror, so both encoders are pinned to one wire layout.
+static const uint8_t kGoldenHeader[STREAM_HEADER_SIZE] = {
+    0x4D, 0x43, 0x50, 0x49, 0x2A, 0x00, 0x00, 0x00, 0xB1, 0x68, 0xDE,
+    0x3A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
+};
+
 int main() {
     uint8_t wire[STREAM_HEADER_SIZE] = {};
     stream_header_write(wire, 42, 987654321ULL, STREAM_CODEC_HEVC, 1024);
+    assert(std::memcmp(wire, kGoldenHeader, STREAM_HEADER_SIZE) == 0);
 
     stream_header_t header = {};
     assert(stream_header_read(wire, &header));
