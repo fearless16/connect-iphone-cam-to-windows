@@ -24,6 +24,8 @@ final class StreamSender {
     var onFrameSent: ((TimeInterval) -> Void)?
     var onConnectionState: ((StreamSenderConnectionState) -> Void)?
     var onKeyFrameNeeded: (() -> Void)?
+    /// Called once each time a live PC connection ends, with a short reason.
+    var onDisconnect: ((String) -> Void)?
     // Keep the queue short to bound latency, but allow enough packets to absorb
     // Network.framework completion jitter. A one-packet gate measured ~30 fps
     // even when the camera was producing native 4K60.
@@ -74,6 +76,7 @@ final class StreamSender {
     func restartListening(reason: String) {
         queue.async { [weak self] in
             guard let self, self.desiredRunning else { return }
+            self.noteDisconnect("listener restart: \(reason)")
             self.connection?.cancel()
             self.connection = nil
             self.connectionReady = false
@@ -167,6 +170,7 @@ final class StreamSender {
                 self.listenerReady = false
                 self.publishConnectionState(.failed)
                 self.report("USB listener failed: \(error.localizedDescription)")
+                self.noteDisconnect("listener failed: \(error.localizedDescription)")
                 self.connection?.cancel()
                 self.connection = nil
                 self.connectionReady = false
@@ -188,6 +192,7 @@ final class StreamSender {
         }
         newListener.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
+            self.noteDisconnect("replaced by new PC connection")
             self.connection?.cancel()
             self.connection = conn
             self.connectionReady = false
@@ -215,6 +220,7 @@ final class StreamSender {
                         self.pauseForConnectionWaiting()
                         self.report("PC connection waiting: \(error.localizedDescription)")
                     case .failed(let error):
+                        self.noteDisconnect("connection failed: \(error.localizedDescription)")
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
@@ -222,6 +228,7 @@ final class StreamSender {
                         self.publishConnectionState(.failed)
                         self.report("PC connection failed: \(error.localizedDescription)")
                     case .cancelled:
+                        self.noteDisconnect("PC connection closed")
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
@@ -313,6 +320,15 @@ final class StreamSender {
         }
     }
 
+    /// Report that a live connection is ending. Call it before the connection is
+    /// cleared; it does nothing when no connection exists, so each drop is
+    /// reported once (later handlers for the same connection fail their identity guard).
+    private func noteDisconnect(_ reason: String) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard connection != nil else { return }
+        onDisconnect?(reason)
+    }
+
     private func publishConnectionState(_ state: StreamSenderConnectionState) {
         dispatchPrecondition(condition: .onQueue(queue))
         onConnectionState?(state)
@@ -345,6 +361,7 @@ final class StreamSender {
                 }
                 if let error {
                     self.report("Video send failed: \(error.localizedDescription)")
+                    self.noteDisconnect("send error: \(error.localizedDescription)")
                     self.connectionReady = false
                     self.connection = nil
                     self.pendingPackets.removeAll(keepingCapacity: true)

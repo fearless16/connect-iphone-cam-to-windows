@@ -81,6 +81,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var encoderDropCount: UInt64 = 0
     private var malformedAccessUnitDropCount: UInt64 = 0
     private var transportDropCount: UInt64 = 0
+    private var linkDropCount: UInt64 = 0
+    private var lastLinkDropReason = "none"
+    private static let linkTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
     private var thermalTelemetry = "THERMAL nominal"
     private var pressureTelemetry = "PRESSURE nominal"
     private var didReceiveFirstCameraFrame = false
@@ -275,6 +282,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self?.requestKeyFrame()
         }
         sender.onKeyFrameNeeded = { [weak self] in self?.requestKeyFrame() }
+        sender.onDisconnect = { [weak self] reason in
+            self?.recordLinkDrop(reason: reason)
+        }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
             self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
         }
@@ -720,6 +730,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         publishDiagnostics()
     }
 
+    private func recordLinkDrop(reason: String) {
+        let time = Self.linkTimeFormatter.string(from: Date())
+        telemetryLock.lock()
+        linkDropCount &+= 1
+        lastLinkDropReason = "\(reason) \(time)"
+        telemetryLock.unlock()
+        publishDiagnostics()
+    }
+
     private func nextEncodedFrameNumber() -> UInt32 {
         telemetryLock.lock()
         encodedFrameNumber &+= 1
@@ -732,11 +751,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         telemetryLock.lock()
         diagnosticsRevision &+= 1
         let revision = diagnosticsRevision
-        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • HEVC %llu • malformed %llu • transport %llu",
+        let text = String(format: "%@ • %@ • %@\nSENSOR %.1f • HEVC %.1f • USB %.1f fps\nDROPS capture %llu • HEVC %llu • malformed %llu • transport %llu\nLINK reconnects %llu • last: %@",
                           activeFormatTelemetry, thermalTelemetry, pressureTelemetry,
                           sensorFPS, encoderFPS, usbFPS,
                           captureDropCount, encoderDropCount,
-                          malformedAccessUnitDropCount, transportDropCount)
+                          malformedAccessUnitDropCount, transportDropCount,
+                          linkDropCount, lastLinkDropReason)
         telemetryLock.unlock()
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isCurrentDiagnosticsRevision(revision) else { return }

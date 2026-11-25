@@ -35,6 +35,9 @@ grep -q 'publishConnectionState(.waiting)' "$sender"
 grep -q 'publishConnectionState(.disconnected)' "$sender"
 grep -q 'publishConnectionState(.failed)' "$sender"
 grep -q 'var onFrameSent' "$sender"
+grep -q 'var onDisconnect' "$sender"
+grep -q 'noteDisconnect' "$sender"
+grep -q 'LINK reconnects' "$streamer"
 
 # Receiving a socket connection is not proof that OBS is receiving video. The
 # sending state must be emitted only from the successful send completion path.
