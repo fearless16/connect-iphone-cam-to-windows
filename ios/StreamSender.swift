@@ -167,13 +167,13 @@ final class StreamSender {
                 self.report("USB stream service ready")
             case .waiting(let error):
                 self.publishConnectionState(.waiting)
-                self.report("USB listener waiting: \(error.localizedDescription)")
+                self.report("USB listener waiting: \(Self.describe(error))")
             case .failed(let error):
                 guard self.listener === newListener else { return }
                 self.listenerReady = false
                 self.publishConnectionState(.failed)
-                self.report("USB listener failed: \(error.localizedDescription)")
-                self.noteDisconnect("listener failed: \(error.localizedDescription)")
+                self.report("USB listener failed: \(Self.describe(error))")
+                self.noteDisconnect("listener failed: \(Self.describe(error))")
                 self.connection?.cancel()
                 self.connection = nil
                 self.connectionReady = false
@@ -223,15 +223,16 @@ final class StreamSender {
                         self.report("PC connected • starting video")
                     case .waiting(let error):
                         self.pauseForConnectionWaiting()
-                        self.report("PC connection waiting: \(error.localizedDescription)")
+                        self.report("PC connection waiting: \(Self.describe(error))")
                     case .failed(let error):
-                        self.noteDisconnect("connection failed: \(error.localizedDescription)")
+                        self.noteDisconnect("connection failed: \(Self.describe(error))")
                         self.connectionReady = false
                         self.connection = nil
                         self.sendInFlight = false
                         self.pendingPackets.removeAll(keepingCapacity: true)
                         self.publishConnectionState(.failed)
-                        self.report("PC connection failed: \(error.localizedDescription)")
+                        self.report("PC connection failed: \(Self.describe(error))")
+                        conn.cancel()
                     case .cancelled:
                         self.noteDisconnect("PC connection closed")
                         self.connectionReady = false
@@ -318,6 +319,19 @@ final class StreamSender {
         }
     }
 
+    private static func describe(_ error: NWError) -> String {
+        switch error {
+        case .posix(let code):
+            return "POSIX \(code.rawValue) \(String(cString: strerror(code.rawValue)))"
+        case .dns(let code):
+            return "DNS \(code)"
+        case .tls(let status):
+            return "TLS \(status)"
+        default:
+            return String(describing: error)
+        }
+    }
+
     private func report(_ message: String) {
         print("SENDER: \(message)")
         DispatchQueue.main.async { [weak self] in
@@ -367,8 +381,8 @@ final class StreamSender {
                     return
                 }
                 if let error {
-                    self.report("Video send failed: \(error.localizedDescription)")
-                    self.noteDisconnect("send error: \(error.localizedDescription)")
+                    self.report("Video send failed: \(Self.describe(error))")
+                    self.noteDisconnect("send error: \(Self.describe(error))")
                     self.connectionReady = false
                     self.connection = nil
                     self.pendingPackets.removeAll(keepingCapacity: true)

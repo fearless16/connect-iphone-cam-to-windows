@@ -105,3 +105,12 @@ awk '
   pending > 0 { pending-- }
   END { exit !(need >= 2 && ok == need) }
 ' "$sender"
+# T5.0: NWError causes are reported with their POSIX code.
+grep -q 'private static func describe(_ error: NWError)' "$sender"
+if grep -q 'error.localizedDescription' "$sender"; then
+  echo "StreamSender must report NWError via describe(_:)" >&2
+  exit 1
+fi
+# T5.0: a connection that reaches .failed is cancelled so it is never leaked.
+failed_case=$(awk '/case \.failed\(let error\):/ { n++ } n == 2 { print } n == 2 && /case \.cancelled:/ { exit }' "$sender")
+printf '%s\n' "$failed_case" | grep -q 'conn\.cancel()'
