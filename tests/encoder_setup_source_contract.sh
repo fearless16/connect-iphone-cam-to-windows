@@ -27,6 +27,19 @@ grep -q 'recoveryAttempt' "$source"
 grep -q 'appIsActive' "$source"
 grep -q 'handleSessionStopped' "$source"
 grep -q 'sender.restartListening' "$source"
+# T1.3: camera recovery keeps the PC connection (orientation still reconnects).
+recover_body=$(awk '
+  /private func recoverSession\(reason:/ { in_r = 1 }
+  /private func scheduleRecovery\(reason:/ { in_r = 0 }
+  in_r { print }
+' "$source")
+printf '%s
+' "$recover_body" | grep -q 'resetForDiscontinuity'
+if printf '%s
+' "$recover_body" | grep -q 'restartListening'; then
+  echo "recoverSession must not restartListening" >&2
+  exit 1
+fi
 grep -q 'Encoder recovery' "$source"
 grep -q 'HEVC encoder setup recovery' "$source"
 # VideoToolbox may report an asynchronous output failure after EncodeFrame

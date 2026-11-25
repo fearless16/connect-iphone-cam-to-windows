@@ -124,6 +124,19 @@ for round in 1...5 {
     close(fd)
 }
 
+// C7 (T1.3): resetForDiscontinuity keeps the connection, gates deltas, then a keyframe flows.
+guard let c7 = connectClient(deadline: 5) else { check(false, "C7 connect failed"); exit(1) }
+check(waitUntil(5) { connectedCount == expectedConnects + 1 }, "C7 onClientConnected")
+sender.send(frameNumber: 200, timestampUs: 1, codec: 0, isKeyframe: true, frame: payload("K", 1))
+check(readPacket(c7, timeout: 3)?.payload == payload("K", 1), "C7 initial keyframe")
+sender.resetForDiscontinuity(reason: "test")
+RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+sender.send(frameNumber: 201, timestampUs: 2, codec: 0, isKeyframe: false, frame: payload("D", 2))
+check(readPacket(c7, timeout: 1) == nil, "C7 connection closed or delta delivered after reset")
+sender.send(frameNumber: 202, timestampUs: 3, codec: 0, isKeyframe: true, frame: payload("K", 3))
+check(readPacket(c7, timeout: 3)?.payload == payload("K", 3), "C7 keyframe after reset")
+close(c7)
+
 // C5: stop() refuses new connections.
 sender.stop()
 close(c2)

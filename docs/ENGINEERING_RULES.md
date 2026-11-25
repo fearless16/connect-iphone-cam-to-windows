@@ -52,7 +52,7 @@ passed. Report it.
 **R-ENG-RECOVER: Discontinuity handling** (observed)
 After any discontinuity (connect, reconnect, transport wait, encoder rebuild, relay reopen),
 delta frames are dropped until a decoder join point arrives: an HEVC AU containing VPS+SPS+PPS+IDR.
-- Sender: `waitingForKeyFrame`. Encoder: forced keyframe on `onClientConnected`.
+- Sender: `waitingForKeyFrame`; `resetForDiscontinuity` for media-only discontinuities. Encoder: forced keyframe on `onClientConnected`.
 - Receiver: `waitingForRandomAccess`. Relay: `RelayRecoveryGate`.
 
 Never weaken one side without the other.

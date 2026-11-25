@@ -22,6 +22,22 @@ grep -q 'listenerRetryAttempt' "$sender"
 grep -q 'NWPathMonitor' "$sender"
 grep -q 'func restartListening' "$sender"
 grep -q 'USB network path changed' "$sender"
+# T1.3: media-only discontinuity keeps the PC connection.
+grep -q 'func resetForDiscontinuity' "$sender"
+reset_body=$(awk '
+  /func resetForDiscontinuity/ { in_f = 1 }
+  in_f { print }
+  in_f && /^    }$/ { exit }
+' "$sender")
+printf '%s
+' "$reset_body" | grep -q 'waitingForKeyFrame = true'
+printf '%s
+' "$reset_body" | grep -q 'pendingPackets.removeAll'
+if printf '%s
+' "$reset_body" | grep -q 'cancel()'; then
+  echo "resetForDiscontinuity must not cancel the connection" >&2
+  exit 1
+fi
 # T1.2: rebind must not wait on TIME_WAIT; retry fast and forever.
 grep -q 'allowLocalEndpointReuse = true' "$sender"
 grep -q 'noDelay = true' "$sender"

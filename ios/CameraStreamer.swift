@@ -1215,7 +1215,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
         refreshActiveFormatTelemetry(device)
-        sender.restartListening(reason: "USB listener rebound after camera recovery")
+        sender.resetForDiscontinuity(reason: "Camera recovered • waiting for keyframe")
         startLivenessWatchdog()
         requestKeyFrame()
         report(reason)

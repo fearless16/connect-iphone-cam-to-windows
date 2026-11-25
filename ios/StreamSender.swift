@@ -87,6 +87,18 @@ final class StreamSender {
         }
     }
 
+    /// Media discontinuity (camera or encoder rebuilt) without a transport fault.
+    /// Keep the PC connection; drop queued deltas and wait for a fresh IDR.
+    func resetForDiscontinuity(reason: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pendingPackets.removeAll(keepingCapacity: true)
+            self.waitingForKeyFrame = true
+            self.sendGeneration &+= 1
+            self.report(reason)
+        }
+    }
+
     private func handlePathUpdate(_ path: NWPath) {
         dispatchPrecondition(condition: .onQueue(queue))
         let wiredInterfaces = path.availableInterfaces
