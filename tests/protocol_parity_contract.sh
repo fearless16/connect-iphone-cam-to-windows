@@ -38,6 +38,10 @@ same "H264 codec id (C vs Swift)" \
   "$(extract "$c_header" 's/.*STREAM_CODEC_H264 = \([0-9]*\).*/\1/p')" \
   "$(extract "$swift_header" 's/.*case h264 = \([0-9]*\).*/\1/p')"
 
+same "max frame size (C vs Swift)" \
+  "$(extract "$c_header" 's/^#define STREAM_MAX_FRAME_SIZE[[:space:]][[:space:]]*(\([0-9]*\)U \* 1024U \* 1024U).*/\1/p')" \
+  "$(extract "$swift_header" 's/.*static let maxFrameSize = \([0-9]*\) \* 1024 \* 1024.*/\1/p')"
+
 # Both encoders must write exactly STREAM_HEADER_SIZE bytes (indices 0..size-1).
 size=$(extract "$c_header" 's/^#define STREAM_HEADER_SIZE[[:space:]][[:space:]]*\([0-9]*\).*/\1/p')
 last_index() {

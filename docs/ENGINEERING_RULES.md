@@ -132,7 +132,7 @@ Do not copy these patterns. Fix them only when that is the task.
 | D2 | `ios/CameraStreamer.swift` (~1,250 lines) owns capture, encode, recovery, telemetry, health, and the watchdog | Add no new responsibilities. Extract pure logic into R-ARCH-4 units when touched |
 | D3 | The wire header has no version field | Human decision. A version needs a coordinated app + receiver release |
 | D4 | iOS `NWListener` accepts on every interface, unauthenticated, and the newest connection replaces the current one | Human decision. For example, require the wired interface |
-| D5 | The sender accepts frames up to `UInt32.max`, but the receiver rejects anything over 16 MiB and drops the session | Guard against `STREAM_MAX_FRAME_SIZE` in `StreamSender.send` |
+| D5 | ~~The sender accepted frames up to `UInt32.max`, but the receiver rejects anything over 16 MiB~~ | Fixed by T1.7: `StreamSender.send` guards `StreamHeader.maxFrameSize` and requests a keyframe |
 | D6 | Source contracts are grep-based: they pin names and strings, not behavior | Prefer runtime tests for logic you can extract |
 | D7 | `scripts/build_*.sh` contain placeholder paths and are not used by CI | Treat CI as the build reference |
 | D8 | `receiver.cpp` mixes discovery, transport, relay, and decode | Extract `ObsUdpRelay` only when changing it |

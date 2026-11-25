@@ -1266,7 +1266,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T1.4 | fix/ios-path-monitor-guard | S | T1.2 | — | DONE-PENDING-MERGE | 2026-11-25 | stacked on T1.3 |
 | T1.5 | fix/ios-light-foreground-resume | S | T1.3 | — | DONE-PENDING-MERGE | 2026-11-25 | also fixes a mis-encoded bullet in the T1.3 string; stacked |
 | T1.6 | fix/ios-drop-to-keyframe | S | T1.3 | — | DONE-PENDING-MERGE | 2026-11-25 | C8 unverified locally; stacked |
-| T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | TODO | | |
+| T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | DONE-PENDING-MERGE | 2026-11-25 | Guard on StreamHeader.maxFrameSize; parity + Swift test; CI must run Swift tests |
 | T1.8 | fix/receiver-fast-reconnect | H | T0.6 | — | TODO | | |
 | T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | DONE-PENDING-MERGE | 2026-11-25 | receiver link unverified locally; CI must confirm |
 | T1.10 | docs/usb-troubleshooting | H | T0.0 | — | TODO | | |

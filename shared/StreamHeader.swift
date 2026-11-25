@@ -10,6 +10,7 @@ enum StreamCodec: UInt8 {
 
 struct StreamHeader {
     static let magic: UInt32 = 0x4950434D // "IPCM"
+    static let maxFrameSize = 16 * 1024 * 1024 // STREAM_MAX_FRAME_SIZE in stream_protocol.h
     static let size = 21                  // magic(4)+frame(4)+ts(8)+codec(1)+size(4)
 
     let magic: UInt32

@@ -24,6 +24,9 @@ struct StreamHeaderTests {
         guard Array(encoded) == goldenHeader else {
             fatalError("StreamHeader.encode() drifted from the C wire layout: \(Array(encoded))")
         }
+        guard StreamHeader.maxFrameSize == 16_777_216 else {
+            fatalError("StreamHeader.maxFrameSize drifted: \(StreamHeader.maxFrameSize)")
+        }
         print("stream_header_test: OK")
     }
 }

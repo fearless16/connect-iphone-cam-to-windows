@@ -252,8 +252,12 @@ final class StreamSender {
 
     /// Send a complete protocol packet (header + Annex-B frame).
     func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, isKeyframe: Bool, frame: Data) {
-        guard frame.count <= Int(UInt32.max) else {
-            print("ERROR: encoded frame exceeds protocol limit")
+        guard frame.count <= StreamHeader.maxFrameSize else {
+            print("ERROR: encoded frame \(frame.count) bytes exceeds protocol limit")
+            queue.async { [weak self] in
+                self?.waitingForKeyFrame = true
+                self?.onKeyFrameNeeded?()
+            }
             return
         }
         let header = StreamHeader(
