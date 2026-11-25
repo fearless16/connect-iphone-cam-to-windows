@@ -38,6 +38,8 @@ if printf '%s
   echo "resetForDiscontinuity must not cancel the connection" >&2
   exit 1
 fi
+# T1.4: a working listener is never rebuilt on a path change.
+grep -q 'guard !listenerReady else' "$sender"
 # T1.2: rebind must not wait on TIME_WAIT; retry fast and forever.
 grep -q 'allowLocalEndpointReuse = true' "$sender"
 grep -q 'noDelay = true' "$sender"

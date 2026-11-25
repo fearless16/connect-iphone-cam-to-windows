@@ -1263,7 +1263,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T1.1 | diag/ios-disconnect-reasons | S | T0.0 | — | TODO | | |
 | T1.2 | fix/ios-listener-reuse | S | T0.7 | — | DONE-PENDING-MERGE | 2026-11-25 | C6 unverified locally (CI macOS); stacked on T0.7 branch |
 | T1.3 | fix/ios-recovery-keeps-connection | S | T1.2 | — | DONE-PENDING-MERGE | 2026-11-25 | C7 unverified locally; stacked on T1.2 |
-| T1.4 | fix/ios-path-monitor-guard | S | T1.2 | — | TODO | | |
+| T1.4 | fix/ios-path-monitor-guard | S | T1.2 | — | DONE-PENDING-MERGE | 2026-11-25 | stacked on T1.3 |
 | T1.5 | fix/ios-light-foreground-resume | S | T1.3 | — | TODO | | |
 | T1.6 | fix/ios-drop-to-keyframe | S | T1.3 | — | TODO | | |
 | T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | TODO | | |

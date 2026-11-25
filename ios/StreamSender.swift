@@ -45,6 +45,7 @@ final class StreamSender {
     // previously-ready listener is never left bound to the old interface.
     private let pathMonitor = NWPathMonitor()
     private var wiredPathSignature: String?
+    private var listenerReady = false
 
     init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -78,6 +79,7 @@ final class StreamSender {
             self.sendInFlight = false
             self.pendingPackets.removeAll(keepingCapacity: true)
             let oldListener = self.listener
+            self.listenerReady = false
             self.listener = nil
             oldListener?.cancel()
             self.listenerRetryAttempt = 0
@@ -116,6 +118,13 @@ final class StreamSender {
         let signature = "\(status):\(wiredInterfaces)"
         defer { wiredPathSignature = signature }
         guard let previous = wiredPathSignature, previous != signature, desiredRunning else { return }
+        // A ready listener is bound to the wildcard address and keeps accepting on
+        // interfaces that appear later. Never drop a working PC connection because
+        // Wi-Fi or cellular changed; only rebuild a listener that is not ready.
+        guard !listenerReady else {
+            print("SENDER: network path changed; listener still ready")
+            return
+        }
         restartListening(reason: "USB network path changed • rebinding listener")
     }
 
@@ -138,12 +147,14 @@ final class StreamSender {
             scheduleRestart()
             return
         }
+        listenerReady = false
         listener = newListener
         newListener.stateUpdateHandler = { [weak self, weak newListener] state in
             guard let self, let newListener else { return }
             switch state {
             case .ready:
                 guard self.listener === newListener else { return }
+                self.listenerReady = true
                 self.listenerRetryAttempt = 0
                 self.publishConnectionState(.waiting)
                 self.report("USB stream service ready")
@@ -152,6 +163,7 @@ final class StreamSender {
                 self.report("USB listener waiting: \(error.localizedDescription)")
             case .failed(let error):
                 guard self.listener === newListener else { return }
+                self.listenerReady = false
                 self.publishConnectionState(.failed)
                 self.report("USB listener failed: \(error.localizedDescription)")
                 self.connection?.cancel()
@@ -164,6 +176,7 @@ final class StreamSender {
                 self.scheduleRestart()
             case .cancelled:
                 guard self.listener === newListener else { return }
+                self.listenerReady = false
                 self.listener = nil
                 self.publishConnectionState(self.desiredRunning ? .waiting : .disconnected)
                 self.report("USB listener stopped")
@@ -278,6 +291,7 @@ final class StreamSender {
             self?.sendInFlight = false
             self?.pendingPackets.removeAll(keepingCapacity: true)
             self?.listener?.cancel()
+            self?.listenerReady = false
             self?.listener = nil
             self?.publishConnectionState(.disconnected)
         }
