@@ -16,6 +16,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
+#include <windows.h>
 
 #include "gpu_frame_publisher.h"
 #include "hevc_access_unit.h"
@@ -675,12 +676,24 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost) {
     }
 }
 
+// Clicking the console enables QuickEdit selection, which suspends any thread
+// that writes to the console. The relay must never stall on a log line.
+static void disable_console_quick_edit() {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (input == nullptr || input == INVALID_HANDLE_VALUE || !GetConsoleMode(input, &mode)) return;
+    mode &= ~static_cast<DWORD>(ENABLE_QUICK_EDIT_MODE);
+    mode |= ENABLE_EXTENDED_FLAGS;
+    SetConsoleMode(input, mode);
+}
+
 int main(int argc, char** argv) {
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
         fprintf(stderr, "ERROR: WSAStartup failed\n");
         return 1;
     }
+    disable_console_quick_edit();
 
     // Keep running across app restarts, lock/unlock recovery, and USB reconnects.
     // A double-clicked receiver must wait for the iPhone instead of flashing away.

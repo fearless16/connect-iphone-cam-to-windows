@@ -1268,7 +1268,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T1.6 | fix/ios-drop-to-keyframe | S | T1.3 | — | DONE-PENDING-MERGE | 2026-11-25 | C8 unverified locally; stacked |
 | T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | TODO | | |
 | T1.8 | fix/receiver-fast-reconnect | H | T0.6 | — | TODO | | |
-| T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | TODO | | |
+| T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | DONE-PENDING-MERGE | 2026-11-25 | receiver link unverified locally; CI must confirm |
 | T1.10 | docs/usb-troubleshooting | H | T0.0 | — | TODO | | |
 | DC-1 | (owner) | — | T1.1–T1.10 | — | TODO | | |
 | T2.1 | diag/receiver-timing-stats | S | T0.0 | — | TODO | | |

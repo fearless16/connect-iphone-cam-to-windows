@@ -85,6 +85,7 @@ over local UDP to an OBS Media Source.
 | Receiver keeps retrying | Turn on iPhone Personal Hotspot, keep USB connected, and leave the camera app open. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
+| Video froze after clicking the receiver window | Fixed in this receiver build (QuickEdit is disabled). On old builds, press Esc in the console. |
 | Black frame in OBS | Transport not yet flowing; check the receiver console / phone is streaming. |
 
 ---
