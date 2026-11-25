@@ -74,6 +74,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var liveBitRate: Int?
     // T5.8: link-window state. Accessed only on sessionQueue.
     private var bitrateController = BitrateController()
+    private var presetAdvisor = PresetAdvisor()
     private var windowMaxQueueMs = 0.0
     private var windowDropTotal: UInt64 = 0
     private var lastWindowDropTotal: UInt64 = 0
@@ -464,6 +465,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var onPresetChanged: ((StreamPreset) -> Void)?
     /// Presets this iPhone has a matching capture format for. Main queue.
     var onPresetAvailability: (([StreamPreset]) -> Void)?
+    /// A recommended preset and a short reason (T5.7). The app only shows it;
+    /// the user taps Switch. Main queue.
+    var onAdvice: ((StreamPreset, String) -> Void)?
 
     private func currentPreset() -> StreamPreset {
         encoderStateLock.lock()
@@ -514,13 +518,43 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         windowMaxQueueMs = 0
         encoderStateLock.lock()
         let target = presetTargetBitRateLocked()
+        let overWiFi = linkIsWiFi
+        let preset = activePreset
         let current = liveBitRate ?? target
         let next = bitrateController.nextBitrate(current: current, presetTarget: target, window: window)
         if next != current { liveBitRate = next }
         encoderStateLock.unlock()
-        guard next != current else { return }
-        applyLiveBitRate()
-        publishBitrateHealth()
+        if next != current {
+            applyLiveBitRate()
+            publishBitrateHealth()
+        }
+        recommendPreset(from: preset, overWiFi: overWiFi, bitrate: next, target: target, window: window)
+    }
+
+    /// Suggests another preset when the link or the phone cannot keep up (T5.7).
+    /// It only publishes the suggestion; the resolution changes only when the
+    /// user chooses it.
+    private func recommendPreset(from preset: StreamPreset, overWiFi: Bool, bitrate: Int, target: Int,
+                                 window: LinkWindow) {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard let index = StreamPreset.allCases.firstIndex(of: preset) else { return }
+        guard let advice = presetAdvisor.advice(presetIndex: index,
+                                                presetCount: StreamPreset.allCases.count,
+                                                overWiFi: overWiFi,
+                                                bitrateAtFloor: bitrate <= target / 2,
+                                                bitrateAtFull: bitrate >= target,
+                                                window: window,
+                                                now: ProcessInfo.processInfo.systemUptime) else { return }
+        let toIndex: Int
+        let reason: String
+        switch advice {
+        case .down(let advisedIndex, let advisedReason): toIndex = advisedIndex; reason = advisedReason
+        case .up(let advisedIndex, let advisedReason): toIndex = advisedIndex; reason = advisedReason
+        }
+        guard StreamPreset.allCases.indices.contains(toIndex) else { return }
+        let suggested = StreamPreset.allCases[toIndex]
+        report("Quality advice: \(suggested.rawValue) • \(reason)")
+        DispatchQueue.main.async { [weak self] in self?.onAdvice?(suggested, reason) }
     }
 
     /// Back to the full preset rate: after a preset change, a new PC connection
@@ -531,6 +565,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         liveBitRate = nil
         encoderStateLock.unlock()
         bitrateController = BitrateController()
+        presetAdvisor = PresetAdvisor()
         windowMaxQueueMs = 0
         publishBitrateHealth()
     }
