@@ -22,6 +22,10 @@ grep -q 'listenerRetryAttempt' "$sender"
 grep -q 'NWPathMonitor' "$sender"
 grep -q 'func restartListening' "$sender"
 grep -q 'USB network path changed' "$sender"
+# T1.2: rebind must not wait on TIME_WAIT; retry fast and forever.
+grep -q 'allowLocalEndpointReuse = true' "$sender"
+grep -q 'noDelay = true' "$sender"
+grep -q 'min(2.0, 0.25 \* pow(2.0' "$sender"
 
 # A transient Network.framework wait is a transport discontinuity: stop frame
 # admission, discard queued delta frames, and require a fresh random-access

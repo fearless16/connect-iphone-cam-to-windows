@@ -110,6 +110,20 @@ check(readPacket(c2, timeout: 0.3) == nil, "C4 delta delivered before keyframe o
 sender.send(frameNumber: 5, timestampUs: 5_000, codec: 0, isKeyframe: true, frame: payload("K", 5))
 check(readPacket(c2, timeout: 3)?.payload == payload("K", 5), "C4 keyframe not delivered on new connection")
 
+// C6 (T1.2): restartListening closes the client; a new client reconnects fast
+// and receives a keyframe. Repeated to catch TIME_WAIT rebind failures.
+var expectedConnects = connectedCount
+for round in 1...5 {
+    guard let fd = connectClient(deadline: 5) else { check(false, "C6 round \(round) connect failed"); exit(1) }
+    expectedConnects += 1
+    check(waitUntil(5) { connectedCount == expectedConnects }, "C6 round \(round) onClientConnected")
+    sender.send(frameNumber: UInt32(100 + round), timestampUs: 1, codec: 0, isKeyframe: true, frame: payload("K", UInt8(round)))
+    check(readPacket(fd, timeout: 3)?.payload == payload("K", UInt8(round)), "C6 round \(round) keyframe not delivered")
+    sender.restartListening(reason: "test")
+    check(readExact(fd, 1, timeout: 3) == nil, "C6 round \(round) expected EOF")
+    close(fd)
+}
+
 // C5: stop() refuses new connections.
 sender.stop()
 close(c2)

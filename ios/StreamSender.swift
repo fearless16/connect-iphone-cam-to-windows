@@ -110,7 +110,13 @@ final class StreamSender {
     private func startOnQueue() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard listener == nil else { return }
-        let params = NWParameters.tcp
+        let tcpOptions = NWProtocolTCP.Options()
+        // Push each frame out immediately; Nagle would hold back a frame's tail.
+        tcpOptions.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcpOptions)
+        // restartListening closes the PC connection server-side, leaving port
+        // 12345 in TIME_WAIT. Without reuse the rebind fails and backs off ~30 s.
+        params.allowLocalEndpointReuse = true
         let newListener: NWListener
         do {
             newListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
@@ -210,7 +216,7 @@ final class StreamSender {
     private func scheduleRestart() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard desiredRunning, listener == nil else { return }
-        let delay = min(30.0, pow(2.0, Double(listenerRetryAttempt)))
+        let delay = min(2.0, 0.25 * pow(2.0, Double(listenerRetryAttempt)))
         listenerRetryAttempt = min(listenerRetryAttempt + 1, 5)
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.desiredRunning, self.listener == nil else { return }
