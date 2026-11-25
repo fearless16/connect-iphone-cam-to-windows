@@ -27,6 +27,8 @@ grep -q 'recoveryAttempt' "$source"
 grep -q 'appIsActive' "$source"
 grep -q 'handleSessionStopped' "$source"
 grep -q 'sender.restartListening' "$source"
+# T1.5: a healthy session is not rebuilt on foreground resume.
+grep -q 'session.isInterrupted' "$source"
 # T1.3: camera recovery keeps the PC connection (orientation still reconnects).
 recover_body=$(awk '
   /private func recoverSession\(reason:/ { in_r = 1 }

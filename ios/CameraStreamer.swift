@@ -1099,6 +1099,19 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             guard let self else { return }
             self.appIsActive = true
             self.recoveryAttempt = 0
+            // Control Center, notifications, Siri and the USB "Trust" alert make the
+            // app inactive without stopping capture. Keep a healthy pipeline as is.
+            if self.isConfigured, !self.stopped,
+               self.session.isRunning, !self.session.isInterrupted,
+               !self.isEncoderSetupFailed() {
+                self.startLivenessWatchdog()
+                if self.activeEncoder() == nil {
+                    // Rebuilt lazily on the next frame with a forced IDR.
+                    self.sender.resetForDiscontinuity(reason: "Camera resumed • waiting for keyframe")
+                    self.requestKeyFrame()
+                }
+                return
+            }
             self.recoverSession(reason: "Camera resumed • waiting for encoder")
         }
     }
@@ -1215,7 +1228,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
         refreshActiveFormatTelemetry(device)
-        sender.resetForDiscontinuity(reason: "Camera recovered � waiting for keyframe")
+        sender.resetForDiscontinuity(reason: "Camera recovered • waiting for keyframe")
         startLivenessWatchdog()
         requestKeyFrame()
         report(reason)
