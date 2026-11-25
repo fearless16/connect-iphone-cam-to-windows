@@ -86,4 +86,12 @@ grep -Fq 'BITRATE %.1f/%.0f Mbps' "$streamer"
 grep -q 'liveBitRate ?? presetTargetBitRateLocked()' "$streamer"
 reset_calls=$(grep -c 'resetAdaptiveBitRate()' "$streamer")
 [ "$reset_calls" -ge 4 ]
+
+# T5.7: the advisor only recommends. The resolution changes only when the user
+# taps Switch, so the one place that applies a preset is setPreset itself and
+# nothing else in CameraStreamer calls it.
+grep -q 'presetAdvisor.advice' "$streamer"
+grep -q 'streamer.onAdvice' "$view_controller"
+set_preset_uses=$(grep -c 'setPreset(' "$streamer")
+[ "$set_preset_uses" -eq 1 ]
 grep -q 'streamer.onPresetAvailability' "$view_controller"

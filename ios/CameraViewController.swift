@@ -11,6 +11,9 @@ final class CameraViewController: UIViewController {
     private let capabilitiesButton = UIButton(type: .system)
     private let presetControl = UISegmentedControl(items: StreamPreset.allCases.map(\.title))
     private var confirmedPreset = StreamPreset.stored
+    private let adviceBanner = UIStackView()
+    private let adviceLabel = UILabel()
+    private var advisedPreset: StreamPreset?
     private let wifiSwitch = UISwitch()
     private let wifiRow = UIStackView()
     private var didStart = false
@@ -100,6 +103,40 @@ final class CameraViewController: UIViewController {
         wifiRow.backgroundColor = UIColor.black.withAlphaComponent(0.6)
         wifiRow.layer.cornerRadius = 10
         wifiRow.translatesAutoresizingMaskIntoConstraints = false
+        // T5.7: a recommendation only. The user taps Switch; the app never
+        // changes the resolution by itself.
+        adviceLabel.textColor = .white
+        adviceLabel.font = .preferredFont(forTextStyle: .subheadline)
+        adviceLabel.numberOfLines = 0
+        var switchConfig = UIButton.Configuration.filled()
+        switchConfig.title = "Switch"
+        let switchButton = UIButton(configuration: switchConfig)
+        switchButton.addTarget(self, action: #selector(acceptAdvice), for: .touchUpInside)
+        var dismissConfig = UIButton.Configuration.plain()
+        dismissConfig.title = "Dismiss"
+        dismissConfig.baseForegroundColor = .white
+        let dismissButton = UIButton(configuration: dismissConfig)
+        dismissButton.addTarget(self, action: #selector(dismissAdvice), for: .touchUpInside)
+        let adviceButtons = UIStackView(arrangedSubviews: [switchButton, dismissButton])
+        adviceButtons.axis = .horizontal
+        adviceButtons.spacing = 12
+        adviceButtons.distribution = .fillEqually
+        adviceBanner.axis = .vertical
+        adviceBanner.spacing = 8
+        adviceBanner.addArrangedSubview(adviceLabel)
+        adviceBanner.addArrangedSubview(adviceButtons)
+        adviceBanner.isLayoutMarginsRelativeArrangement = true
+        adviceBanner.layoutMargins = UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)
+        adviceBanner.backgroundColor = UIColor.black.withAlphaComponent(0.75)
+        adviceBanner.layer.cornerRadius = 10
+        adviceBanner.isHidden = true
+        adviceBanner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(adviceBanner)
+        NSLayoutConstraint.activate([
+            adviceBanner.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            adviceBanner.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            adviceBanner.bottomAnchor.constraint(equalTo: capabilitiesButton.topAnchor, constant: -10),
+        ])
         view.addSubview(wifiRow)
         NSLayoutConstraint.activate([
             presetControl.topAnchor.constraint(equalTo: orientationControl.bottomAnchor, constant: 8),
@@ -138,7 +175,15 @@ final class CameraViewController: UIViewController {
         streamer.onPresetChanged = { [weak self] preset in
             guard let self else { return }
             self.confirmedPreset = preset
+            self.adviceBanner.isHidden = true
+            self.advisedPreset = nil
             self.presetControl.selectedSegmentIndex = StreamPreset.allCases.firstIndex(of: preset) ?? 0
+        }
+        streamer.onAdvice = { [weak self] preset, reason in
+            guard let self, preset != self.confirmedPreset else { return }
+            self.advisedPreset = preset
+            self.adviceLabel.text = "\(preset.rawValue) recommended — \(reason)."
+            self.adviceBanner.isHidden = false
         }
         streamer.onPresetAvailability = { [weak self] available in
             guard let self else { return }
@@ -167,6 +212,18 @@ final class CameraViewController: UIViewController {
         // connection accepts the requested rotation.
         orientationControl.selectedSegmentIndex = confirmedOutputOrientation == .portrait ? 1 : 0
         streamer.setOutputOrientation(orientation)
+    }
+
+    @objc private func acceptAdvice() {
+        guard let preset = advisedPreset else { return }
+        adviceBanner.isHidden = true
+        advisedPreset = nil
+        streamer.setPreset(preset)
+    }
+
+    @objc private func dismissAdvice() {
+        adviceBanner.isHidden = true
+        advisedPreset = nil
     }
 
     @objc private func presetChanged() {

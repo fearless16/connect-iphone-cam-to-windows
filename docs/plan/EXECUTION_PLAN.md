@@ -1321,7 +1321,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled. 183 code lines. AC2 CI; AC5-AC7 device (DC-5a/DC-5b) |
 | T5.5 | feat/receiver-resolution-follow | S | — | — | DONE | 2026-11-26 | hevc_sps_test + receiver link verified locally (MSYS2 g++); Merged without CI (owner instruction). AC3 (e2e 1080p->720p, needs G1) and AC4 (DC-5b device) open |
 | T5.8 | feat/ios-adaptive-bitrate | S | T5.4 | G14 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled; quality_advisor_test runs in CI only (arithmetic checked with a Python port). Plan fix: property is retransmittedTransportByteCount. AC3/AC4 device (DC-5b) |
-| T5.7 | feat/ios-quality-advisor | S | T5.8 | — | TODO | | |
+| T5.7 | feat/ios-quality-advisor | S | T5.8 | — | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled; advisor logic checked with a Python port, Swift test runs in CI only. AC2 device (DC-5b) |
 | DC-5b | (owner) | — | T5.4, T5.5, T5.7, T5.8 | — | TODO | | decides G13 |
 | T5.6 | feat/receiver-constant-latency | O | T5.5, DC-5b | G13 | TODO | | |
 | T5.9 | feat/ios-cinematic-mode | O | T5.4, DC-4 | G11 | TODO | | 30 fps only |
