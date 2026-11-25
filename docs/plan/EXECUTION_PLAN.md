@@ -1315,7 +1315,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T4.2 | docs/soak-signoff | H | soak | — | TODO | | |
 | T5.0 | diag/ios-nwerror-detail | H | — | — | DONE | 2026-11-26 | Merged without CI (owner instruction). Swift build + stream_sender_test unverified; CI macOS must confirm |
 | T5.1 | ci/xcode-26-sdk | H | — | — | DONE | 2026-11-26 | Merged without CI (owner instruction). Unverified: runner SDK is 26 on macos-15 (else switch to macos-26); API-name step output still to be copied for T5.9/T5.10 |
-| T5.2 | diag/ios-capability-probe | S | T5.1 | — | DONE-PENDING-MERGE | 2026-11-26 | Swift not compiled locally; CI not run. Unverified: AVFoundation property names (esp. isCinematicVideoCaptureSupported, iOS 26 SDK); AC3 = DC-4 on device |
+| T5.2 | diag/ios-capability-probe | S | T5.1 | — | DONE | 2026-11-26 | Swift not compiled locally; CI not run. Unverified: AVFoundation property names (esp. isCinematicVideoCaptureSupported, iOS 26 SDK); AC3 = DC-4 on device |
 | DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
 | DC-5a | (owner) | — | T5.0, T3.1 | — | TODO | | USB vs Wi-Fi A/B |
 | T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | TODO | | |
