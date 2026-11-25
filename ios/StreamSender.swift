@@ -21,6 +21,8 @@ final class StreamSender {
     var onStatus: ((String) -> Void)?
     var onClientConnected: (() -> Void)?
     var onFrameRate: ((Double, UInt64) -> Void)?
+    /// Window-max time (ms) a packet waited in the send queue plus the send, reported with onFrameRate.
+    var onQueueLatency: ((Double) -> Void)?
     var onFrameSent: ((TimeInterval) -> Void)?
     var onConnectionState: ((StreamSenderConnectionState) -> Void)?
     var onKeyFrameNeeded: (() -> Void)?
@@ -30,7 +32,8 @@ final class StreamSender {
     // Network.framework completion jitter. A one-packet gate measured ~30 fps
     // even when the camera was producing native 4K60.
     private let maxQueuedPackets = 8
-    private var pendingPackets: [Data] = []
+    private var pendingPackets: [(data: Data, enqueuedAt: TimeInterval)] = []
+    private var windowMaxQueueLatencyMs = 0.0
     private var sendInFlight = false
     // Network.framework may complete a send that was submitted before a
     // transient `.waiting` state. Fence those completions so they cannot make
@@ -290,7 +293,7 @@ final class StreamSender {
                 self.onKeyFrameNeeded?()
                 return
             }
-            self.pendingPackets.append(packet)
+            self.pendingPackets.append((data: packet, enqueuedAt: ProcessInfo.processInfo.systemUptime))
             // Do not admit delta frames until this IDR was actually retained.
             if isKeyframe { self.waitingForKeyFrame = false }
             self.pumpSend(connection: conn)
@@ -345,7 +348,9 @@ final class StreamSender {
 
     private func pumpSend(connection: NWConnection) {
         guard connectionReady, !sendInFlight, !pendingPackets.isEmpty else { return }
-        let packet = pendingPackets.removeFirst()
+        let next = pendingPackets.removeFirst()
+        let packet = next.data
+        let enqueuedAt = next.enqueuedAt
         sendInFlight = true
         let generation = sendGeneration
         connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
@@ -371,6 +376,8 @@ final class StreamSender {
                 }
                 self.sentFrameCount &+= 1
                 let sentAt = ProcessInfo.processInfo.systemUptime
+                self.windowMaxQueueLatencyMs = max(self.windowMaxQueueLatencyMs,
+                                                   (sentAt - enqueuedAt) * 1000.0)
                 if self.sentFrameCount == 1 {
                     self.publishConnectionState(.sending)
                     self.onFrameSent?(sentAt)
@@ -382,6 +389,8 @@ final class StreamSender {
                 if self.sentFrameCount % 60 == 0 {
                     let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - self.sentFrameStart)
                     self.onFrameRate?(Double(self.sentFrameCount) / elapsed, self.droppedFrameCount)
+                    self.onQueueLatency?(self.windowMaxQueueLatencyMs)
+                    self.windowMaxQueueLatencyMs = 0
                 }
                 self.pumpSend(connection: connection)
             }
