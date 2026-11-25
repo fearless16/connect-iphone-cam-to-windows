@@ -96,3 +96,12 @@ awk '
 grep -q 'enqueuedAt' "$sender"
 grep -q 'var onQueueLatency' "$sender"
 grep -q 'windowMaxQueueLatencyMs' "$sender"
+
+# Review fix: the queue-latency window belongs to one connection. Every place
+# that restarts the per-connection frame counters must also clear it.
+awk '
+  /self\.sentFrameCount = 0/ { pending = 4; need++; next }
+  pending > 0 && /windowMaxQueueLatencyMs = 0/ { pending = 0; ok++; next }
+  pending > 0 { pending-- }
+  END { exit !(need >= 2 && ok == need) }
+' "$sender"

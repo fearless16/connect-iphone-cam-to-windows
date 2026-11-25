@@ -570,9 +570,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                     frame: annexB)
     }
 
-    private func monotonicUs() -> UInt64 {
+    // The timebase is fixed for the life of the process; query it once.
+    private static let machTimebase: mach_timebase_info_data_t = {
         var info = mach_timebase_info()
         mach_timebase_info(&info)
+        return info
+    }()
+
+    private func monotonicUs() -> UInt64 {
+        let info = Self.machTimebase
         return UInt64(mach_absolute_time()) * UInt64(info.numer) / UInt64(info.denom) / 1000
     }
 

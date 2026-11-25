@@ -165,6 +165,21 @@ for idx in 1..<seen.count where seen[idx].frameNumber != seen[idx - 1].frameNumb
 }
 close(c8)
 
+// C9 (T2.2 review): onQueueLatency reports a finite, plausible window max
+// once per 60 sent frames. Client reads every packet so the queue never overflows.
+var queueLatencies: [Double] = []
+sender.onQueueLatency = { queueLatencies.append($0) }
+guard let c9 = connectClient(deadline: 5) else { check(false, "C9 connect failed"); exit(1) }
+check(waitUntil(5) { connectedCount == expectedConnects + 3 }, "C9 onClientConnected")
+for i in 0..<60 {
+    sender.send(frameNumber: UInt32(9000 + i), timestampUs: UInt64(i), codec: 0, isKeyframe: true, frame: payload("K", UInt8(i)))
+    check(readPacket(c9, timeout: 3) != nil, "C9 frame \(i) not delivered")
+}
+check(waitUntil(3) { !queueLatencies.isEmpty }, "C9 onQueueLatency never fired after 60 frames")
+check(queueLatencies[0].isFinite && queueLatencies[0] >= 0 && queueLatencies[0] < 5_000,
+      "C9 implausible queue latency \(queueLatencies[0]) ms")
+close(c9)
+
 // C5: stop() refuses new connections.
 sender.stop()
 close(c2)

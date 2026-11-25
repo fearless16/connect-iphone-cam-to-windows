@@ -44,6 +44,10 @@ other sections.
    with the attribution line from your harness. **Never push, merge, rebase
    `main`, or force anything** unless the user says so in this session.
 10. Finish with the report format from the `implement-change` skill.
+11. Merge only after CI is green on the branch. The workflow does not run on
+    branch pushes, so trigger it: `gh workflow run build.yml --ref <branch>`, wait
+    for success, then merge with `--no-ff` and confirm the `main` run is green.
+    Local `check.sh` SKIPs (C++, Swift, link, xcodebuild) are unverified until then.
 
 Line numbers in this plan refer to commit `f657cdd`, and they drift. Always
 `grep` for the quoted code. Don't trust a line number alone.
@@ -1258,17 +1262,17 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T0.4 | feat/receiver-host-flag | S | T0.0 | — | DONE | 2026-11-25 | Merged to main; receiver link unverified locally, CI must confirm |
 | T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | TODO | | |
 | T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | TODO | | |
-| T0.7 | test/ios-sender-socket-test | S | T0.1 | — | DONE-PENDING-MERGE | 2026-11-25 | Swift test unverified locally; CI macOS must confirm |
+| T0.7 | test/ios-sender-socket-test | S | T0.1 | — | DONE | 2026-11-25 | Swift test unverified locally; CI macOS must confirm |
 | T0.8 | chore/docker-receiver-cross-build | O | T0.2 | G2 | TODO | | optional |
 | T1.1 | diag/ios-disconnect-reasons | S | T0.0 | — | DONE | 2026-11-25 | Merged to main; Swift build unverified locally, CI macOS must confirm |
-| T1.2 | fix/ios-listener-reuse | S | T0.7 | — | DONE-PENDING-MERGE | 2026-11-25 | C6 unverified locally (CI macOS); stacked on T0.7 branch |
-| T1.3 | fix/ios-recovery-keeps-connection | S | T1.2 | — | DONE-PENDING-MERGE | 2026-11-25 | C7 unverified locally; stacked on T1.2 |
-| T1.4 | fix/ios-path-monitor-guard | S | T1.2 | — | DONE-PENDING-MERGE | 2026-11-25 | stacked on T1.3 |
-| T1.5 | fix/ios-light-foreground-resume | S | T1.3 | — | DONE-PENDING-MERGE | 2026-11-25 | also fixes a mis-encoded bullet in the T1.3 string; stacked |
-| T1.6 | fix/ios-drop-to-keyframe | S | T1.3 | — | DONE-PENDING-MERGE | 2026-11-25 | C8 unverified locally; stacked |
-| T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | DONE-PENDING-MERGE | 2026-11-25 | Guard on StreamHeader.maxFrameSize; parity + Swift test; CI must run Swift tests |
+| T1.2 | fix/ios-listener-reuse | S | T0.7 | — | DONE | 2026-11-25 | C6 unverified locally (CI macOS); stacked on T0.7 branch |
+| T1.3 | fix/ios-recovery-keeps-connection | S | T1.2 | — | DONE | 2026-11-25 | C7 unverified locally; stacked on T1.2 |
+| T1.4 | fix/ios-path-monitor-guard | S | T1.2 | — | DONE | 2026-11-25 | stacked on T1.3 |
+| T1.5 | fix/ios-light-foreground-resume | S | T1.3 | — | DONE | 2026-11-25 | also fixes a mis-encoded bullet in the T1.3 string; stacked |
+| T1.6 | fix/ios-drop-to-keyframe | S | T1.3 | — | DONE | 2026-11-25 | C8 unverified locally; stacked |
+| T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | DONE | 2026-11-25 | Guard on StreamHeader.maxFrameSize; parity + Swift test; CI must run Swift tests |
 | T1.8 | fix/receiver-fast-reconnect | H | T0.6 | — | TODO | | |
-| T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | DONE-PENDING-MERGE | 2026-11-25 | receiver link unverified locally; CI must confirm |
+| T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | DONE | 2026-11-25 | receiver link unverified locally; CI must confirm |
 | T1.10 | docs/usb-troubleshooting | H | T0.0 | — | DONE | 2026-11-25 | Docs only; facts checked against connect_to_device order |
 | DC-1 | (owner) | — | T1.1–T1.10 | — | TODO | | |
 | T2.1 | diag/receiver-timing-stats | S | T0.0 | — | DONE | 2026-11-25 | Merged only after branch CI green (C++ tests + link verified in CI) |

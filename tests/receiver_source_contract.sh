@@ -66,3 +66,26 @@ grep -q 'relayGateDrop=%llu' "$receiver"
 grep -q 'extraDelayMs=%.1f maxExtraMs=%.1f maxGapMs=%.1f burst=%u skewMs=%.1f' "$receiver"
 grep -q 'enum class RelayWriteResult' "$receiver"
 grep -q 'RelayWriteResult::GateDrop' "$receiver"
+
+# Review fixes (fix/review-findings).
+# No disk I/O of any kind in the receiver (R-ENG-PERF): the dead stream dump is gone.
+! grep -q 'kSaveReceivedStream' "$receiver"
+! grep -q 'fopen' "$receiver"
+! grep -q 'received.h265' "$receiver"
+# An idle phone must not be mistaken for a dead one: the wait for the next
+# header has its own, longer limit than the wait for the rest of a packet.
+grep -q 'kHeaderIdleTimeoutMs = 15' "$receiver"
+grep -q 'kPayloadTimeoutMs = 5' "$receiver"
+grep -q 'read_exact(fd, hdr.data(), STREAM_HEADER_SIZE, "stream header", kHeaderIdleTimeoutMs)' "$receiver"
+grep -q 'read_exact(fd, packet->data, h.frame_size, "video frame", kPayloadTimeoutMs)' "$receiver"
+# The wire accepts H264 in the header, but this receiver only relays HEVC.
+grep -q 'h.codec != STREAM_CODEC_HEVC' "$receiver"
+grep -q 'unsupported stream codec' "$receiver"
+# Ctrl+C / console close request a clean stop so the relay writes its trailer
+# and closes before WSACleanup. Waits are sliced so a stop is noticed quickly.
+grep -q '#include <atomic>' "$receiver"
+grep -q 'std::atomic<bool> g_stopRequested' "$receiver"
+grep -q 'SetConsoleCtrlHandler' "$receiver"
+grep -q 'g_stopRequested.load()' "$receiver"
+grep -q 'kWaitSliceMs' "$receiver"
+grep -q 'while (!g_stopRequested.load())' "$receiver"

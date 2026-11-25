@@ -85,6 +85,8 @@ Every code change follows the `implement-change` skill:
 6. **Review.** Run `change-review` on the diff, and `architecture-alignment` again (after).
 7. **Report.** Cover criteria met, checks run, checks skipped, and any risks.
 
+Merge only after CI is green on the branch (`gh workflow run build.yml --ref <branch>`; the workflow
+does not run on branch pushes), then `--no-ff` into `main` and confirm the `main` run is green.
 Writing the code does not make the task complete.
 
 ## Skills (`.claude/skills/`)
