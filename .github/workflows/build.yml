@@ -123,6 +123,7 @@ jobs:
           install: >-
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-libusbmuxd
             git
             make
