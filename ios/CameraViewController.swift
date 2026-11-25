@@ -8,6 +8,7 @@ final class CameraViewController: UIViewController {
     private let statusLabel = UILabel()
     private let diagnosticsLabel = UILabel()
     private let orientationControl = UISegmentedControl(items: ["Landscape", "Portrait"])
+    private let capabilitiesButton = UIButton(type: .system)
     private var didStart = false
     private var confirmedOutputOrientation: OutputOrientation = .landscape
 
@@ -55,7 +56,21 @@ final class CameraViewController: UIViewController {
         orientationControl.translatesAutoresizingMaskIntoConstraints = false
         orientationControl.addTarget(self, action: #selector(outputOrientationChanged), for: .valueChanged)
         view.addSubview(orientationControl)
+
+        // T5.2: one-shot device capability report, read-only.
+        var capabilitiesConfig = UIButton.Configuration.plain()
+        capabilitiesConfig.title = "Capabilities"
+        capabilitiesConfig.baseForegroundColor = .white
+        capabilitiesConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
+        capabilitiesButton.configuration = capabilitiesConfig
+        capabilitiesButton.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        capabilitiesButton.layer.cornerRadius = 10
+        capabilitiesButton.translatesAutoresizingMaskIntoConstraints = false
+        capabilitiesButton.addTarget(self, action: #selector(showCapabilities), for: .touchUpInside)
+        view.addSubview(capabilitiesButton)
         NSLayoutConstraint.activate([
+            capabilitiesButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            capabilitiesButton.bottomAnchor.constraint(equalTo: diagnosticsLabel.topAnchor, constant: -10),
             orientationControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             orientationControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             orientationControl.widthAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.widthAnchor,
@@ -104,9 +119,74 @@ final class CameraViewController: UIViewController {
         streamer.setOutputOrientation(orientation)
     }
 
+    @objc private func showCapabilities() {
+        capabilitiesButton.isEnabled = false
+        streamer.capabilityReport { [weak self] text in
+            guard let self else { return }
+            self.capabilitiesButton.isEnabled = true
+            self.present(CapabilityReportViewController(text: text), animated: true)
+        }
+    }
+
     private func updatePreviewOrientation(_ orientation: OutputOrientation) {
         guard let connection = previewLayer.connection,
               connection.isVideoRotationAngleSupported(orientation.rotationAngle) else { return }
         connection.videoRotationAngle = orientation.rotationAngle
+    }
+}
+
+/// Read-only, copyable text of the capability report (T5.2).
+private final class CapabilityReportViewController: UIViewController {
+
+    private let text: String
+
+    init(text: String) {
+        self.text = text
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        let textView = UITextView()
+        textView.isEditable = false
+        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.text = text
+        textView.translatesAutoresizingMaskIntoConstraints = false
+
+        let copyButton = UIButton(type: .system)
+        copyButton.setTitle("Copy", for: .normal)
+        copyButton.addTarget(self, action: #selector(copyReport), for: .touchUpInside)
+        let closeButton = UIButton(type: .system)
+        closeButton.setTitle("Close", for: .normal)
+        closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
+        let buttons = UIStackView(arrangedSubviews: [copyButton, closeButton])
+        buttons.distribution = .fillEqually
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(buttons)
+        view.addSubview(textView)
+        NSLayoutConstraint.activate([
+            buttons.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            buttons.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            buttons.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            textView.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: 8),
+            textView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            textView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            textView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+        ])
+    }
+
+    @objc private func copyReport() {
+        UIPasteboard.general.string = text
+    }
+
+    @objc private func close() {
+        dismiss(animated: true)
     }
 }
