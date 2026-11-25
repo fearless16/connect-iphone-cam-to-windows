@@ -89,6 +89,7 @@ cpp_test tests/protocol_selftest.cpp protocol
 cpp_test tests/relay_timestamp_clock_test.cpp windows
 cpp_test tests/relay_recovery_gate_test.cpp windows
 cpp_test tests/hevc_access_unit_test.cpp windows
+cpp_test tests/hevc_sps_test.cpp windows
 cpp_test tests/stream_timing_test.cpp windows
 
 echo "== Swift runtime tests"

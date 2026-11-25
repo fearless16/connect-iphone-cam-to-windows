@@ -89,3 +89,6 @@ grep -q 'SetConsoleCtrlHandler' "$receiver"
 grep -q 'g_stopRequested.load()' "$receiver"
 grep -q 'kWaitSliceMs' "$receiver"
 grep -q 'while (!g_stopRequested.load())' "$receiver"
+# T5.5: the relay announces the size from the SPS, not a fixed 4K.
+grep -q 'HevcAccessUnitDimensions' "$receiver"
+if grep -q 'codecpar->width = 3840' "$receiver"; then echo "relay must use the SPS size" >&2; exit 1; fi
