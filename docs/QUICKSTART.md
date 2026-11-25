@@ -18,7 +18,7 @@ The iPhone plugs into the **Windows PC** with a USB cable.
 7. **Enable Developer Mode on the phone**: iPhone → Settings → Privacy & Security → Developer Mode → On. Reboot when prompted.
 8. Press **Run (▶)**. Xcode installs & launches the app.
    - First launch: iPhone shows a "Trust this Developer?" prompt → Settings → General → VPN & Device Management → trust your Apple ID. Run again.
-   - The app shows **nothing** (no UI by design). Xcode's console prints `STATUS: Camera Active`.
+   - The app shows a camera preview, status and diagnostics lines, and a Landscape/Portrait switch. Xcode's console prints `STATUS: Camera Active`.
 9. Unplug from Mac, plug the **same iPhone into the Windows PC** now.
 
 > The free account re-signs every 7 days; just re-Run from the Mac when it expires.
@@ -29,6 +29,10 @@ The iPhone plugs into the **Windows PC** with a USB cable.
 
 `receiver.exe` is the supported single-PC path. It relays the iPhone's HEVC feed
 over local UDP to an OBS Media Source.
+
+**USB path:** the receiver first tries **Apple Devices** (usbmux) over the USB cable.
+Only if that fails does it fall back to the iPhone **Personal Hotspot** USB network.
+So install Apple Devices and keep Personal Hotspot as a backup, not the first choice.
 
 ### Option 1 (recommended): build exactly like CI with MSYS2
 
@@ -64,10 +68,10 @@ over local UDP to an OBS Media Source.
      -DUSBMUXD_LIBRARY=C:\path\to\libusbmuxd\lib\usbmuxd.lib
    cmake --build build --config Release
    ```
-7. On iPhone: **Settings → Personal Hotspot → Allow Others to Join → On**.
-   Keep the iPhone USB cable connected and tap **Trust** if requested. Apple
-   Devices provides the Windows USB-network driver. This is still USB (not
-   Wi-Fi), but it avoids the incomplete Windows `usbmuxd` implementation.
+7. Keep the iPhone USB cable connected and tap **Trust** if requested. If the
+   receiver cannot reach the phone through Apple Devices, turn on **Settings →
+   Personal Hotspot → Allow Others to Join** as the fallback. Apple Devices
+   provides the Windows USB-network driver for it. This is still USB (not Wi-Fi).
 8. In OBS, follow [OBS-SETUP.md](../OBS-SETUP.md) to add the Media Source.
 9. Start the receiver:
    ```
@@ -82,7 +86,7 @@ over local UDP to an OBS Media Source.
 
 ## PART C — Run
 
-- Phone must be plugged into the Windows PC via USB and the app running (`STATUS: Camera Active` on the Mac console earlier; the app keeps running after unplug once launched).
+- Phone must be plugged into the Windows PC via USB, with the app open in the foreground (the screen stays awake by design).
 - Start the OBS Media Source before `receiver.exe`; relay-write errors are
   counted as `relayDrop` and do not end the iPhone connection.
 
@@ -94,7 +98,11 @@ over local UDP to an OBS Media Source.
 |---|---|
 | Xcode: "Failed to code sign" | Set a Team in Signing & Capabilities (Part A step 4). |
 | App won't launch on phone | Trust developer: Settings → General → VPN & Device Management. |
-| Receiver keeps retrying | Turn on iPhone Personal Hotspot, keep USB connected, and leave the camera app open. |
+| Receiver keeps retrying | Keep USB connected, leave the camera app open in the foreground, and answer any "Trust This Computer" prompt. If Apple Devices cannot connect, turn on Personal Hotspot as the fallback. |
+| Stream stalls or drops at random | Windows: Control Panel → Power Options → Change plan settings → Change advanced power settings → USB settings → USB selective suspend setting → **Disabled**. |
+| Connection is unreliable | Use a USB port directly on the motherboard (no hub) and a data-capable cable, not a charge-only one. |
+| Phone asks "Trust This Computer?" | Tap Trust and enter the passcode once. Without it the PC cannot reach the app. |
+| iOS asks "Allow accessory to connect?" | Allow it. |
 | Connect to a specific phone address (Wi-Fi or tests) | Run `receiver.exe --host <ip>`. It connects straight to `<ip>:12345` and skips usbmux. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
