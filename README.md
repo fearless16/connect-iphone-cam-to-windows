@@ -30,7 +30,7 @@ Read **`docs/QUICKSTART.md`** — it lists every click and command for both Mac 
 
 ## Order of work (transport first, blur last)
 1. ✅ 4K60 capture + HEVC encode (iOS)
-2. ✅ USB-network send through iPhone Personal Hotspot (iOS)
+2. ✅ USB send via usbmux (Personal Hotspot fallback)
 3. ✅ Receive + decode (Windows)
 4. ✅ `receiver.exe` relays USB HEVC to OBS over UDP (Media Source)
 5. ⏳ Stability test: 30+ min continuous stream
