@@ -3,12 +3,17 @@ name: Build iPhone USB receiver
 # Builds BOTH sides in the cloud. You never compile anything.
 #   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
 #   - Windows: receiver.exe + runtime DLLs -> download, run on the PC
-# Trigger: push to main, or run manually from the Actions tab.
+# Trigger: push to main, any pull request, or run manually from the Actions tab.
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ---------------------------------------------------------------------------

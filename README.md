@@ -22,6 +22,9 @@ tests/      runtime tests and source contracts (all wired into CI)
 Contributors and AI agents: start with `CLAUDE.md`, and run `sh scripts/check.sh`
 before submitting a change.
 
+CI runs on every pull request. To test a branch without a PR, use Actions → Run workflow and
+pick the branch.
+
 ## How to build (full beginner steps)
 Read **`docs/QUICKSTART.md`** — it lists every click and command for both Mac and Windows.
 
