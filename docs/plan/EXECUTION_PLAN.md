@@ -1284,8 +1284,8 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T0.2 | chore/docker-check-gate | H | T0.0 | G2 | TODO | | |
 | T0.3 | chore/msys2-local-build | H | T0.0 | — | DONE | 2026-11-25 | Merged to main; script UNVERIFIED (no MSYS2 g++ on this PC), owner runs it once |
 | T0.4 | feat/receiver-host-flag | S | T0.0 | — | DONE | 2026-11-25 | Merged to main; receiver link unverified locally, CI must confirm |
-| T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | DONE-PENDING-MERGE | 2026-11-26 | Branch test/receiver-e2e-harness (stacked on fix/review-findings-2, not pushed: owner said local only). All scenarios pass locally against receiver.exe (MSYS2 MINGW64). Fixture needs open-gop=0 (the plan command gave CRA, not IDR). Receiver stdout made unbuffered. CI not run |
-| T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | DONE-PENDING-MERGE | 2026-11-26 | Same branch as T0.5. stall_timeout stalls mid-frame (a between-frame 7 s stall is under the 15 s header timeout). Added soak (memory + handles). All pass locally; CI not run |
+| T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). Fixture needs open-gop=0 (the plan command gave CRA, not IDR). Receiver logs one write per line (log_line) |
+| T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). stall_timeout stalls mid-frame (a between-frame 7 s stall is under the 15 s header timeout). Soak (memory + handles) included |
 | T0.7 | test/ios-sender-socket-test | S | T0.1 | — | DONE | 2026-11-25 | Swift test unverified locally; CI macOS must confirm |
 | T0.8 | chore/docker-receiver-cross-build | O | T0.2 | G2 | TODO | | optional |
 | T1.1 | diag/ios-disconnect-reasons | S | T0.0 | — | DONE | 2026-11-25 | Merged to main; Swift build unverified locally, CI macOS must confirm |
@@ -1295,7 +1295,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T1.5 | fix/ios-light-foreground-resume | S | T1.3 | — | DONE | 2026-11-25 | also fixes a mis-encoded bullet in the T1.3 string; stacked |
 | T1.6 | fix/ios-drop-to-keyframe | S | T1.3 | — | DONE | 2026-11-25 | C8 unverified locally; stacked |
 | T1.7 | fix/ios-max-frame-guard | H | T1.6 | — | DONE | 2026-11-25 | Guard on StreamHeader.maxFrameSize; parity + Swift test; CI must run Swift tests |
-| T1.8 | fix/receiver-fast-reconnect | H | T0.6 | — | DONE-PENDING-MERGE | 2026-11-26 | Stacked on test/receiver-e2e-harness; not pushed. e2e disconnect gap 1.118 s -> 0.336 s locally (limit 1.5 s); no contract pinned the old message. CI not run |
+| T1.8 | fix/receiver-fast-reconnect | H | T0.6 | — | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). e2e disconnect gap 1.118 s -> 0.336 s locally (limit 1.5 s); no contract pinned the old message |
 | T1.9 | fix/receiver-console-quickedit | H | T0.0 | — | DONE | 2026-11-25 | receiver link unverified locally; CI must confirm |
 | T1.10 | docs/usb-troubleshooting | H | T0.0 | — | DONE | 2026-11-25 | Docs only; facts checked against connect_to_device order |
 | DC-1 | (owner) | — | T1.1–T1.10 | — | TODO | | |
@@ -1303,16 +1303,16 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T2.2 | diag/ios-latency-telemetry | S | T1.6 | — | DONE | 2026-11-25 | Merged only after branch CI green (Swift build + sender tests verified in CI) |
 | T2.3 | docs/obs-latency-and-av-sync | H | T2.1, T2.2 | — | DONE | 2026-11-25 | Docs only; no measured numbers yet (needs a device) |
 | DC-2 | (owner) | — | T2.1–T2.3 | — | TODO | | decides G3/G5/G6 |
-| T2.4 | perf/ios-encoder-latency | S | DC-2 | G3 | DONE-PENDING-MERGE | 2026-11-26 | Stacked on fix/relay-arrival-timeline; not pushed. Steps 1-2 done (60 frames + 1 s duration; speed hint non-fatal). Step 3 skipped: no DC-2 data, maxQueuedPackets stays 8. Swift NOT compiled (no Xcode here); CI must confirm |
-| T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | DONE-PENDING-MERGE | 2026-11-26 | Stacked on fix/receiver-fast-reconnect; not pushed. New e2e drift (phone clock 1% fast): PTS vs arrival moved 179.6 ms before, 0.04 ms after; burst min offset -299 ms -> 0 ms. BeginSession removed (contract pin changed with reason). CI not run; DC-2 30-min repeat open |
+| T2.4 | perf/ios-encoder-latency | S | DC-2 | G3 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). Steps 1-2 done (60 frames + 1 s duration; speed hint non-fatal); Swift compiled in CI. Step 3 skipped: no DC-2 data, maxQueuedPackets stays 8 |
+| T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). e2e drift (phone clock 1% fast): PTS vs arrival moved 179.6 ms before, 0.04 ms after; burst min offset -299 ms -> 0 ms. BeginSession removed (contract pin changed with reason). DC-2 30-min repeat open |
 | T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | TODO | | optional; mini-plan first |
-| T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | DONE-PENDING-MERGE | 2026-11-26 | Stacked on perf/ios-encoder-latency; not pushed. Resume also forces an IDR and restarts the HEVC fps average. Liveness watchdog unaffected (counts sensor frames). Swift NOT compiled (no Xcode); CI + DC (HEVC 0 fps with no PC, video < 1 s after connect) open |
+| T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). Resume also forces an IDR and restarts the HEVC fps average. Liveness watchdog unaffected (counts sensor frames). Device check open (HEVC 0 fps with no PC, video < 1 s after connect) |
 | T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013 (app built, Swift tests passed). Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
 | T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | SKIPPED | 2026-11-25 | superseded by T5.4 + T5.8 |
 | T3.3 | feat/wifi-discovery | O | T3.1 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Mini-plan: docs/plan/T3.3-wifi-discovery.md. receiver links locally (MSYS2 g++), wifi_discovery_test passes; Bonjour browse verified against a local mDNS registration. UNVERIFIED: address resolve (this PC does not answer queries for its own registration) and the Swift change; AC4 CI, AC5 device |
 | DC-3 | (owner) | — | T3.1 | — | TODO | | T3.2 SKIPPED |
 | T4.1 | chore/retire-gpu-ring | S | T0.6 | G9 | TODO | | optional |
-| T4.2 | docs/soak-signoff | H | soak | — | TODO | | |
+| T4.2 | docs/soak-signoff | H | soak | — | TODO | | Pre-device evidence only: 30-min fake 4K60 40 Mbps e2e soak PASS locally (107,957 PES, 0 CC errors, memory 21.74 -> 22.3 MiB, handles 821 -> 823). Device soak sign-off still required |
 | T5.0 | diag/ios-nwerror-detail | H | — | — | DONE | 2026-11-26 | Merged without CI (owner instruction). Swift build + stream_sender_test unverified; CI macOS must confirm |
 | T5.1 | ci/xcode-26-sdk | H | — | — | DONE | 2026-11-26 | Merged without CI (owner instruction). Unverified: runner SDK is 26 on macos-15 (else switch to macos-26); API-name step output still to be copied for T5.9/T5.10 |
 | T5.2 | diag/ios-capability-probe | S | T5.1 | — | DONE | 2026-11-26 | Swift not compiled locally; CI not run. Unverified: AVFoundation property names (esp. isCinematicVideoCaptureSupported, iOS 26 SDK); AC3 = DC-4 on device |
@@ -1328,7 +1328,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.10 | feat/ios-portrait-effect | S | T5.4, DC-4 | G12 | TODO | | Portrait only; never 4K |
 | T5.11 | docs/wifi-presets-effects | H | T5.0–T5.10, T3.3 | — | TODO | | deps may be SKIPPED |
 | DC-6 | (owner) | — | T5.11 | — | TODO | | |
-| T6.1 | feat/crash-report-side-channel | S | T3.3 | owner delegated transport choice (2026-11-26) | DONE-PENDING-MERGE | 2026-11-26 | Mini-plan: docs/plan/T6.1-crash-report.md. Review fixes on release/long-streams: Xcode object IDs renumbered (collided with SceneDelegate/CapabilityReport), crash fetch honors IPHONE_CAMERA_UDID, status through CameraStreamer (os.Logger) instead of print. New e2e `crash_report` (bad magic and 4 GiB length: no ack; valid report saved byte for byte and acked; video flows) passes. UNVERIFIED: MetricKit delivery on device (AC4) |
+| T6.1 | feat/crash-report-side-channel | S | T3.3 | owner delegated transport choice (2026-11-26) | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). Mini-plan: docs/plan/T6.1-crash-report.md. Review fixes: Xcode object IDs renumbered, crash fetch honors IPHONE_CAMERA_UDID, status through CameraStreamer (os.Logger), one write per receiver log line, connect log names the real port. e2e `crash_report` (bad magic and 4 GiB length: no ack; valid report saved byte for byte and acked; video flows) passes. UNVERIFIED: MetricKit delivery on device (AC4) |
 
 ---
 
