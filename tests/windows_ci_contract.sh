@@ -30,6 +30,14 @@ done
 grep -q 'tests/app_icon_contract.ps1' "$workflow"
 grep -q 'name: iPhoneCameraStream-ipa' "$workflow"
 grep -q 'name: windows-binaries' "$workflow"
+# Review fix: the artifact once shipped receiver.exe alone (45 KB) because the
+# DLL filter looked in /mingw64/bin while the toolchain is UCRT64. Copy from the
+# active MSYS2 prefix and fail the job if no DLL was copied.
+! grep -q 'mingw64' "$workflow"
+grep -q 'MSYSTEM_PREFIX' "$workflow"
+grep -q 'no runtime DLLs were copied next to receiver.exe' "$workflow"
+# libswscale is used only by the archived virtual camera.
+! grep -q 'libswscale' "$workflow"
 
 # The only supported single-user Windows path is receiver.exe -> OBS UDP.
 # Archived DirectShow and Media Foundation prototypes must not consume normal CI

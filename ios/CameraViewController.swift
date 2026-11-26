@@ -45,7 +45,7 @@ final class CameraViewController: UIViewController {
         statusLabel.clipsToBounds = true
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(statusLabel)
-        diagnosticsLabel.text = "4K60 verification pending"
+        diagnosticsLabel.text = "\(StreamPreset.stored.rawValue) verification pending"
         diagnosticsLabel.textColor = .white
         diagnosticsLabel.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.72)
         diagnosticsLabel.font = .monospacedDigitSystemFont(ofSize: 14, weight: .semibold)

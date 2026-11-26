@@ -1,7 +1,7 @@
 name: Build iPhone USB receiver
 
 # Builds BOTH sides in the cloud. You never compile anything.
-#   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
+#   - iOS: unsigned .ipa  -> sign with your own Apple ID and install (docs/BACKDOOR.md)
 #   - Windows: receiver.exe + runtime DLLs -> download, run on the PC
 # Trigger: push to main, any pull request, or run manually from the Actions tab.
 
@@ -24,7 +24,8 @@ jobs:
 
       - name: Select newest Xcode 26
         run: |
-          xc=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          # Newest stable Xcode 26: never a beta or release candidate.
+          xc=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -viE 'beta|_rc' | sort -V | tail -1 || true)
           if [ -n "$xc" ]; then sudo xcode-select -s "$xc"; fi
 
       - name: Require iOS 26 SDK
@@ -208,12 +209,18 @@ jobs:
             "${{ github.workspace }}/windows/receiver.cpp" \
             "${{ github.workspace }}/windows/gpu_frame_publisher.cpp" \
             -o receiver.exe \
-            $(pkg-config --libs libavcodec libavformat libavutil libswscale) \
+            $(pkg-config --libs libavcodec libavformat libavutil) \
             $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ldnsapi -ld3d11 -ldxgi -lmfplat -ladvapi32
           ls -lh receiver.exe
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/
-          ldd receiver.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
+          # The toolchain is UCRT64, so the runtime DLLs live in /ucrt64/bin.
+          # Without them the downloaded receiver.exe cannot start on a clean PC.
+          dll_prefix="${MSYSTEM_PREFIX:-/ucrt64}/bin/"
+          ldd receiver.exe | awk -v prefix="$dll_prefix" 'index($3, prefix) == 1 { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
+          dll_count=$(ls windows-binaries/*.dll 2>/dev/null | wc -l)
+          [ "$dll_count" -gt 0 ] || { echo "no runtime DLLs were copied next to receiver.exe"; exit 1; }
+          ls -lh windows-binaries/
 
       - uses: actions/upload-artifact@v7
         with:

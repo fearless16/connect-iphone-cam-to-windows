@@ -4,6 +4,7 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 import Foundation
+import os
 
 enum OutputOrientation: String {
     case landscape
@@ -52,8 +53,9 @@ enum StreamPreset: String, CaseIterable {
     }
 }
 
-/// Steps 1-4 only: 4K60 capture -> hardware HEVC (Annex-B) -> file.
-/// No UI, no network, no segmentation. Run on device with Developer Mode on.
+/// Owns the camera pipeline: capture at the chosen preset, hardware HEVC
+/// (Annex-B), recovery, telemetry and health, and hands every access unit to
+/// `StreamSender`. The UI talks only to this class.
 final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private let session = AVCaptureSession()
@@ -62,8 +64,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     var onStatus: ((String) -> Void)?
     private var encoder: VTCompressionSession?
     private var encoderSetupFailed = false
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "iPhoneCameraStream",
+                                    category: "camera")
+    // Protected by encoderStateLock: set on the capture queue, cleared on sessionQueue.
     private var reportedUnexpectedFrameSize = false
-    private let encoderStateLock = NSLock()
+    private let encoderStateLock = OSAllocatedUnfairLock()
     // Protected by encoderStateLock: the chosen preset, whether the PC is
     // connected over Wi-Fi, and whether a live bit rate failure was reported.
     private var activePreset = StreamPreset.stored
@@ -72,12 +77,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // T5.8: the adapted target while the link is struggling; nil means the full
     // preset rate. Protected by encoderStateLock.
     private var liveBitRate: Int?
-    // T5.8: link-window state. Accessed only on sessionQueue.
+    // T5.8: link-window state. Accessed only on sessionQueue. The window's drops
+    // and queue wait arrive with each StreamSender.LinkStats reading.
     private var bitrateController = BitrateController()
     private var presetAdvisor = PresetAdvisor()
-    private var windowMaxQueueMs = 0.0
-    private var windowDropTotal: UInt64 = 0
-    private var lastWindowDropTotal: UInt64 = 0
     private var forceNextKeyFrame = false
     private var isConfigured = false
     private var stopped = false
@@ -102,7 +105,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private let sender = StreamSender()
     private var frameNumber: UInt32 = 0
     private var encodedFrameNumber: UInt32 = 0
-    private let protocolTimestampLock = NSLock()
+    private let protocolTimestampLock = OSAllocatedUnfairLock()
     private var lastProtocolTimestampUs: UInt64 = 0
     private var encoderWidth = 0
     private var encoderHeight = 0
@@ -111,7 +114,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // one recovery-backoff reset for every successful output callback.
     private var recoveryBackoffResetGeneration: UInt64 = 0
     private var frameStartUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
-    private let telemetryLock = NSLock()
+    private let telemetryLock = OSAllocatedUnfairLock()
     private var activeFormatTelemetry = "Waiting for camera format"
     private var sensorFirstPTS = CMTime.invalid
     private var encoderFirstPTS = CMTime.invalid
@@ -132,13 +135,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var lastLinkDropReason = "none"
     private static let linkTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
+        // A fixed format needs the POSIX locale, or user settings can change it.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
     private var thermalTelemetry = "THERMAL nominal"
     private var pressureTelemetry = "PRESSURE nominal"
     private var didReceiveFirstCameraFrame = false
-    private let healthLock = NSLock()
+    private let healthLock = OSAllocatedUnfairLock()
     private var healthRevision: UInt64 = 0
     private var healthUpdatesEnabled = false
     private var cameraHealth = "CAMERA starting"
@@ -160,7 +165,6 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     override init() {
         super.init()
-        _ = ProcessInfo.processInfo.thermalState
         let center = NotificationCenter.default
         notificationTokens = [
             center.addObserver(forName: UIApplication.didBecomeActiveNotification,
@@ -205,8 +209,18 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         notificationTokens.forEach(NotificationCenter.default.removeObserver)
     }
 
+    // Main queue only. A scene that reconnects (UIScene lifecycle) creates a new
+    // view controller, which calls start() again on the running pipeline.
+    private var startRequested = false
+
     // MARK: - Step 1: permission + session start
     func start() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !startRequested else {
+            republishState()
+            return
+        }
+        startRequested = true
         beginStreamHealth()
         updateStreamHealth(camera: "CAMERA starting • requesting access",
                            event: "Preparing \(StreamPreset.stored.rawValue) camera")
@@ -251,14 +265,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             return
         }
 
-        // Step 2: print supported 4K60 formats
+        // Startup only: list the formats for diagnosis (debug level, not kept in release logs).
         for format in device.formats {
             let desc = format.formatDescription
             let dims = CMVideoFormatDescriptionGetDimensions(desc)
             let maxFps = format.videoSupportedFrameRateRanges
                 .map { $0.maxFrameRate }.max() ?? 0
             let subtype = CMFormatDescriptionGetMediaSubType(desc)
-            print("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps) subtype=\(subtype)")
+            Self.log.debug("FORMAT: \(dims.width)x\(dims.height) maxFps=\(maxFps) subtype=\(subtype)")
         }
 
         guard let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
@@ -269,11 +283,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         session.addInput(input)
         videoDevice = device
-        pressureObservation = device.observe(\.systemPressureState, options: [.new]) { [weak self] _, _ in
-            self?.handleSystemPressureChange()
+        // The KVO callback runs on an arbitrary thread: read the level from the
+        // device it hands over, never from sessionQueue state.
+        pressureObservation = device.observe(\.systemPressureState, options: [.new]) { [weak self] device, _ in
+            self?.handleSystemPressureChange(device.systemPressureState.level)
         }
         handleThermalStateChange()
-        handleSystemPressureChange()
+        handleSystemPressureChange(device.systemPressureState.level)
 
         let output = AVCaptureVideoDataOutput()
         output.videoSettings = [
@@ -315,7 +331,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         isConfigured = true
         stopped = false
         invalidateEncoder(reason: nil)
+        encoderStateLock.lock()
         reportedUnexpectedFrameSize = false
+        encoderStateLock.unlock()
         session.startRunning()
         setIdleTimerDisabled(true)
         refreshActiveFormatTelemetry(device)
@@ -338,14 +356,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         sender.onQueueLatency = { [weak self] maxMs in
             self?.recordQueueLatency(maxMs)
-            self?.sessionQueue.async { [weak self] in
-                guard let self else { return }
-                self.windowMaxQueueMs = max(self.windowMaxQueueMs, maxMs)
-            }
         }
         sender.onFrameRate = { [weak self] sentFps, droppedFrames in
             self?.recordTransport(fps: sentFps, droppedFrames: droppedFrames)
-            self?.sessionQueue.async { [weak self] in self?.windowDropTotal = droppedFrames }
         }
         sender.onLinkStats = { [weak self] stats in
             self?.sessionQueue.async { [weak self] in self?.handleLinkStats(stats) }
@@ -387,77 +400,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         // UIDevice is main-actor state, so read it before hopping queues.
         let osVersion = UIDevice.current.systemVersion
         sessionQueue.async {
-            let text = Self.buildCapabilityReport(osVersion: osVersion)
+            let text = CapabilityReport.build(osVersion: osVersion)
             DispatchQueue.main.async { completion(text) }
         }
-    }
-
-    private static func buildCapabilityReport(osVersion: String) -> String {
-        var lines = [
-            "device \(machineIdentifier())",
-            "iOS \(osVersion)",
-            "thermal \(thermalStateName(ProcessInfo.processInfo.thermalState))",
-        ]
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .builtInDualWideCamera,
-                          .builtInTripleCamera, .builtInTrueDepthCamera],
-            mediaType: .video,
-            position: .unspecified)
-        let wanted: [(width: Int32, height: Int32)] = [(1280, 720), (1920, 1080), (1920, 1440), (3840, 2160)]
-        for device in discovery.devices {
-            let side = device.position == .front ? "front" : "back"
-            let type = device.deviceType.rawValue.replacingOccurrences(of: "AVCaptureDeviceType", with: "")
-            for format in device.formats {
-                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-                guard wanted.contains(where: { $0.width == dims.width && $0.height == dims.height }) else { continue }
-                let subtype = CMFormatDescriptionGetMediaSubType(format.formatDescription)
-                guard subtype == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
-                        subtype == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange else { continue }
-                let maxFps = format.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
-                let portraitFps = format.videoFrameRateRangeForPortraitEffect?.maxFrameRate ?? 0
-                var background = "n/a"
-                if #available(iOS 18, *) {
-                    background = yesNo(format.isBackgroundReplacementSupported)
-                }
-                var cinematic = "n/a"
-                if #available(iOS 26, *) {
-                    cinematic = yesNo(format.isCinematicVideoCaptureSupported)
-                }
-                lines.append("\(side) \(type) \(dims.width)x\(dims.height) \(fourCC(subtype)) " +
-                             "maxFps=\(Int(maxFps.rounded())) 60fps=\(yesNo(maxFps >= 60)) " +
-                             "portrait=\(yesNo(format.isPortraitEffectSupported))@\(Int(portraitFps.rounded())) " +
-                             "studio=\(yesNo(format.isStudioLightSupported)) " +
-                             "centerStage=\(yesNo(format.isCenterStageSupported)) " +
-                             "bg=\(background) cinematic=\(cinematic)")
-            }
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private static func yesNo(_ value: Bool) -> String { value ? "y" : "n" }
-
-    private static func machineIdentifier() -> String {
-        var info = utsname()
-        uname(&info)
-        return withUnsafeBytes(of: &info.machine) { raw in
-            String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
-        }
-    }
-
-    private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
-        switch state {
-        case .nominal: return "nominal"
-        case .fair: return "fair"
-        case .serious: return "serious"
-        case .critical: return "critical"
-        @unknown default: return "unknown"
-        }
-    }
-
-    private static func fourCC(_ code: FourCharCode) -> String {
-        let bytes = [UInt8((code >> 24) & 0xff), UInt8((code >> 16) & 0xff),
-                     UInt8((code >> 8) & 0xff), UInt8(code & 0xff)]
-        return String(decoding: bytes, as: UTF8.self)
     }
 
     // MARK: - T5.4 quality presets (gate G8 prime)
@@ -506,16 +451,14 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func handleLinkStats(_ stats: StreamSender.LinkStats) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard isConfigured, !stopped else { return }
-        // The sender counts drops per connection, so a smaller total is a new connection.
-        let drops = windowDropTotal >= lastWindowDropTotal ? windowDropTotal - lastWindowDropTotal : windowDropTotal
-        lastWindowDropTotal = windowDropTotal
-        let window = LinkWindow(drops: drops,
-                                maxQueueMs: windowMaxQueueMs,
+        // The sender closes each window on its own timer, so a stalled link that
+        // sends nothing still reports its drops and its growing queue wait.
+        let window = LinkWindow(drops: stats.drops,
+                                maxQueueMs: stats.maxQueueMs,
                                 rttMs: stats.rttMs,
                                 rttVarMs: stats.rttVarMs,
                                 retransmitRatio: stats.retransmitRatio,
                                 thermal: ProcessInfo.processInfo.thermalState)
-        windowMaxQueueMs = 0
         encoderStateLock.lock()
         let target = presetTargetBitRateLocked()
         let overWiFi = linkIsWiFi
@@ -566,7 +509,6 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         encoderStateLock.unlock()
         bitrateController = BitrateController()
         presetAdvisor = PresetAdvisor()
-        windowMaxQueueMs = 0
         publishBitrateHealth()
     }
 
@@ -656,8 +598,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         UserDefaults.standard.bool(forKey: wifiPreferenceKey)
     }
 
-    /// Persists the Wi-Fi choice and applies it. The sender rebinds its listener,
-    /// which closes the current PC connection; the receiver reconnects.
+    /// Persists the Wi-Fi choice and applies it. The sender rebuilds only its
+    /// listener: a USB connection keeps streaming, and a Wi-Fi client is closed
+    /// only when Wi-Fi is turned off.
     func setWiFiEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.wifiPreferenceKey)
         sender.setWiFiEnabled(enabled)
@@ -672,8 +615,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     /// Persists a user-selected frame orientation. The setting affects only the
     /// camera output connection; USB framing and the receiver protocol stay
-    /// unchanged. The receiver reconnect makes OBS see a clean HEVC sequence
-    /// after the encoder begins producing frames in the new dimensions.
+    /// unchanged. Like a preset change it keeps the PC connection (P1): the
+    /// rebuilt encoder starts with VPS/SPS/PPS + IDR in the new dimensions and
+    /// the receiver follows the size from the SPS. Never call restartListening here.
     func setOutputOrientation(_ orientation: OutputOrientation) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -690,11 +634,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             }
             self.activeOutputOrientation = orientation
             UserDefaults.standard.set(orientation.rawValue, forKey: OutputOrientation.preferenceKey)
+            // invalidateEncoder forces the next frame to be an IDR.
             self.invalidateEncoder(reason: nil)
-            self.sender.restartListening(reason: "Output changed to \(orientation.title)")
-            self.requestKeyFrame()
+            self.sender.resetForDiscontinuity(reason: "Output changed to \(orientation.title)")
             self.publishOutputOrientation(orientation)
-            self.report("Output \(orientation.title) selected • reconnecting PC")
+            self.report("Output \(orientation.title) selected • waiting for keyframe")
         }
     }
 
@@ -784,8 +728,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let width = CVPixelBufferGetWidth(px)
         let height = CVPixelBufferGetHeight(px)
         guard isPresetFrame(width: width, height: height) else {
-            if !reportedUnexpectedFrameSize {
-                reportedUnexpectedFrameSize = true
+            encoderStateLock.lock()
+            let firstMismatch = !reportedUnexpectedFrameSize
+            reportedUnexpectedFrameSize = true
+            encoderStateLock.unlock()
+            if firstMismatch {
                 report("Camera delivered \(width)x\(height), expected \(currentPreset().rawValue)")
             }
             return
@@ -823,7 +770,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         frameNumber &+= 1
         let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - frameStartUptime)
         if frameNumber % 600 == 0 {
-            print(String(format: "FPS: ~%.1f", Double(frameNumber) / elapsed))
+            let fps = Double(frameNumber) / elapsed
+            Self.log.debug("FPS: ~\(fps, format: .fixed(precision: 1))")
         }
     }
 
@@ -1350,7 +1298,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         try? FileManager.default.removeItem(at: url)
         FileManager.default.createFile(atPath: url.path, contents: nil)
         outputFile = try? FileHandle(forWritingTo: url)
-        print("OUTPUT: \(url.path)")
+        Self.log.notice("OUTPUT: \(url.path, privacy: .public)")
     }
 
     func stop() {
@@ -1369,10 +1317,28 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     }
 
     private func report(_ message: String) {
-        print("STATUS: \(message)")
+        // os.Logger reaches Console.app and `log stream` on release builds; print does not.
+        Self.log.notice("STATUS: \(message, privacy: .public)")
         updateStreamHealth(event: message)
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
+        }
+    }
+
+    /// Sends the current health, orientation and preset to a newly attached view
+    /// controller without touching the camera, the encoder or the PC connection.
+    private func republishState() {
+        healthLock.lock()
+        let revision = healthRevision
+        let text = healthSnapshotLocked()
+        healthLock.unlock()
+        deliverStreamHealth(text, revision: revision)
+        publishDiagnostics()
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.stopped else { return }
+            self.publishOutputOrientation(self.activeOutputOrientation)
+            self.publishPreset(self.currentPreset())
+            if let device = self.videoDevice { self.publishPresetAvailability(for: device) }
         }
     }
 
@@ -1594,13 +1560,11 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             case .critical: label = "THERMAL critical • camera may stop"
             @unknown default: label = "THERMAL unknown"
             }
-            self.setThermalTelemetry(label)
+            self.setThermalTelemetry(label, atRisk: thermalState == .serious || thermalState == .critical)
         }
     }
 
-    private func handleSystemPressureChange() {
-        guard let device = videoDevice else { return }
-        let pressure = device.systemPressureState.level
+    private func handleSystemPressureChange(_ pressure: AVCaptureDevice.SystemPressureState.Level) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             let label: String
@@ -1612,28 +1576,25 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             case .shutdown: label = "PRESSURE shutdown • camera interrupted"
             default: label = "PRESSURE unknown"
             }
-            self.setPressureTelemetry(label)
+            self.setPressureTelemetry(label,
+                                      atRisk: pressure == .serious || pressure == .critical || pressure == .shutdown)
         }
     }
 
-    private func setThermalTelemetry(_ value: String) {
+    private func setThermalTelemetry(_ value: String, atRisk: Bool) {
         telemetryLock.lock()
         thermalTelemetry = value
         telemetryLock.unlock()
         publishDiagnostics()
-        if value.contains("risk") || value.contains("critical") || value.contains("shutdown") {
-            report(value)
-        }
+        if atRisk { report(value) }
     }
 
-    private func setPressureTelemetry(_ value: String) {
+    private func setPressureTelemetry(_ value: String, atRisk: Bool) {
         telemetryLock.lock()
         pressureTelemetry = value
         telemetryLock.unlock()
         publishDiagnostics()
-        if value.contains("risk") || value.contains("critical") || value.contains("shutdown") {
-            report(value)
-        }
+        if atRisk { report(value) }
     }
 
     private func recoverSession(reason: String) {

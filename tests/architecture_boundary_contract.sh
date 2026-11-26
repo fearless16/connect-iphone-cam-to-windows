@@ -45,7 +45,7 @@ only_imports R-ARCH-2 shared/StreamHeader.swift Foundation
 # R-ARCH-3: iOS layering. UI never reaches the transport; only StreamSender
 # frames wire packets; the transport has no UI or capture dependencies.
 only_imports R-ARCH-3 ios/StreamSender.swift Foundation Network
-for ui in ios/AppDelegate.swift ios/CameraViewController.swift; do
+for ui in ios/AppDelegate.swift ios/SceneDelegate.swift ios/CameraViewController.swift ios/CapabilityReport.swift; do
   if tr -d '\r' < "$ui" | grep -Eq 'StreamSender|NWConnection|NWListener|StreamHeader'; then
     fail R-ARCH-3 "$ui references the transport layer; route through CameraStreamer"
   fi

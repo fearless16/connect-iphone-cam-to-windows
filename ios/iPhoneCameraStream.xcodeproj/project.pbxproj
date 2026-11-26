@@ -15,6 +15,8 @@
 		3A0000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000007 /* Assets.xcassets */; };
 		3A0000000000000000000006 /* LengthPrefixedHEVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000008 /* LengthPrefixedHEVC.swift */; };
 		3A0000000000000000000007 /* QualityAdvisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000009 /* QualityAdvisor.swift */; };
+		3A0000000000000000000008 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000000000000000000000A /* SceneDelegate.swift */; };
+		3A0000000000000000000009 /* CapabilityReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000000000000000000000B /* CapabilityReport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +30,8 @@
 		2A0000000000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2A0000000000000000000008 /* LengthPrefixedHEVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LengthPrefixedHEVC.swift; sourceTree = "<group>"; };
 		2A0000000000000000000009 /* QualityAdvisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QualityAdvisor.swift; sourceTree = "<group>"; };
+		2A000000000000000000000A /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
+		2A000000000000000000000B /* CapabilityReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityReport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -45,7 +49,9 @@
 			isa = PBXGroup;
 			children = (
 				2A0000000000000000000000 /* AppDelegate.swift */,
+				2A000000000000000000000A /* SceneDelegate.swift */,
 				2A0000000000000000000001 /* CameraStreamer.swift */,
+				2A000000000000000000000B /* CapabilityReport.swift */,
 				2A0000000000000000000002 /* StreamSender.swift */,
 				2A0000000000000000000008 /* LengthPrefixedHEVC.swift */,
 				2A0000000000000000000009 /* QualityAdvisor.swift */,
@@ -143,7 +149,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				3A0000000000000000000000 /* AppDelegate.swift in Sources */,
+				3A0000000000000000000008 /* SceneDelegate.swift in Sources */,
 				3A0000000000000000000001 /* CameraStreamer.swift in Sources */,
+				3A0000000000000000000009 /* CapabilityReport.swift in Sources */,
 				3A0000000000000000000002 /* StreamSender.swift in Sources */,
 				3A0000000000000000000006 /* LengthPrefixedHEVC.swift in Sources */,
 				3A0000000000000000000007 /* QualityAdvisor.swift in Sources */,

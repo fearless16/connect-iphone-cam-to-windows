@@ -140,8 +140,8 @@ enum LengthPrefixedHEVC {
             }
 
             output.append(contentsOf: annexBStartCode)
-            output.append(Data(bytes: bytes.baseAddress!.advanced(by: offset),
-                               count: nalLength))
+            // Append straight from the source buffer: no temporary Data per NAL.
+            output.append(bytes.baseAddress!.advanced(by: offset), count: nalLength)
             offset += nalLength
         }
 
@@ -151,33 +151,37 @@ enum LengthPrefixedHEVC {
     /// Returns true only for HEVC IDR_W_RADL/IDR_N_LP NAL units (types 19/20).
     /// CRA/BLA pictures are deliberately not decoder join points for a newly
     /// connected Windows receiver because they may depend on earlier state.
+    /// All VCL NAL units of one picture share its type, so the first slice
+    /// (type 0-31) decides: the scan never walks the slice payload, which is
+    /// almost all of a 4K access unit, and reads the bytes in place.
     static func containsIDR(_ annexB: Data) -> Bool {
-        let bytes = [UInt8](annexB)
-        var index = 0
-        while index + 3 <= bytes.count {
-            let startCodeLength: Int
-            if index + 3 <= bytes.count,
-               bytes[index] == 0,
-               bytes[index + 1] == 0,
-               bytes[index + 2] == 1 {
-                startCodeLength = 3
-            } else if index + 4 <= bytes.count,
-                      bytes[index] == 0,
-                      bytes[index + 1] == 0,
-                      bytes[index + 2] == 0,
-                      bytes[index + 3] == 1 {
-                startCodeLength = 4
-            } else {
-                index += 1
-                continue
-            }
+        annexB.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var index = 0
+            while index + 3 <= bytes.count {
+                let startCodeLength: Int
+                if bytes[index] == 0,
+                   bytes[index + 1] == 0,
+                   bytes[index + 2] == 1 {
+                    startCodeLength = 3
+                } else if index + 4 <= bytes.count,
+                          bytes[index] == 0,
+                          bytes[index + 1] == 0,
+                          bytes[index + 2] == 0,
+                          bytes[index + 3] == 1 {
+                    startCodeLength = 4
+                } else {
+                    index += 1
+                    continue
+                }
 
-            let nalOffset = index + startCodeLength
-            guard nalOffset + 1 < bytes.count else { return false }
-            let nalType = (bytes[nalOffset] >> 1) & 0x3f
-            if (19...20).contains(nalType) { return true }
-            index = nalOffset + 2
+                let nalOffset = index + startCodeLength
+                guard nalOffset + 1 < bytes.count else { return false }
+                let nalType = (bytes[nalOffset] >> 1) & 0x3f
+                if nalType < 32 { return (19...20).contains(nalType) }
+                index = nalOffset + 2
+            }
+            return false
         }
-        return false
     }
 }

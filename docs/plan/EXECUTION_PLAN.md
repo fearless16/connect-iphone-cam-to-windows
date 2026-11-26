@@ -1307,7 +1307,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | TODO | | |
 | T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | TODO | | optional; mini-plan first |
 | T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | TODO | | |
-| T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled. Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
+| T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013 (app built, Swift tests passed). Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
 | T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | SKIPPED | 2026-11-25 | superseded by T5.4 + T5.8 |
 | T3.3 | feat/wifi-discovery | O | T3.1 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Mini-plan: docs/plan/T3.3-wifi-discovery.md. receiver links locally (MSYS2 g++), wifi_discovery_test passes; Bonjour browse verified against a local mDNS registration. UNVERIFIED: address resolve (this PC does not answer queries for its own registration) and the Swift change; AC4 CI, AC5 device |
 | DC-3 | (owner) | — | T3.1 | — | TODO | | T3.2 SKIPPED |
@@ -1318,10 +1318,10 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.2 | diag/ios-capability-probe | S | T5.1 | — | DONE | 2026-11-26 | Swift not compiled locally; CI not run. Unverified: AVFoundation property names (esp. isCinematicVideoCaptureSupported, iOS 26 SDK); AC3 = DC-4 on device |
 | DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
 | DC-5a | (owner) | — | T5.0, T3.1 | — | TODO | | USB vs Wi-Fi A/B |
-| T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled. 183 code lines. AC2 CI; AC5-AC7 device (DC-5a/DC-5b) |
+| T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013. 183 code lines. AC2 CI; AC5-AC7 device (DC-5a/DC-5b) |
 | T5.5 | feat/receiver-resolution-follow | S | — | — | DONE | 2026-11-26 | hevc_sps_test + receiver link verified locally (MSYS2 g++); Merged without CI (owner instruction). AC3 (e2e 1080p->720p, needs G1) and AC4 (DC-5b device) open |
-| T5.8 | feat/ios-adaptive-bitrate | S | T5.4 | G14 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled; quality_advisor_test runs in CI only (arithmetic checked with a Python port). Plan fix: property is retransmittedTransportByteCount. AC3/AC4 device (DC-5b) |
-| T5.7 | feat/ios-quality-advisor | S | T5.8 | — | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled; advisor logic checked with a Python port, Swift test runs in CI only. AC2 device (DC-5b) |
+| T5.8 | feat/ios-adaptive-bitrate | S | T5.4 | G14 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013 (quality_advisor_test passed). Review fix (fix/review-findings-2): drops and queue wait now come from the sender's 2 s timer, so a stalled link is seen. Plan fix: property is retransmittedTransportByteCount. AC3/AC4 device (DC-5b) |
+| T5.7 | feat/ios-quality-advisor | S | T5.8 | — | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013. AC2 device (DC-5b) |
 | DC-5b | (owner) | — | T5.4, T5.5, T5.7, T5.8 | — | TODO | | decides G13 |
 | T5.6 | feat/receiver-constant-latency | O | T5.5, DC-5b | G13 | TODO | | |
 | T5.9 | feat/ios-cinematic-mode | O | T5.4, DC-4 | G11 | TODO | | 30 fps only |

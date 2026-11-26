@@ -1,7 +1,9 @@
-// Steps 6-7: connect over usbmuxd, receive protocol packets,
-// decode HEVC with FFmpeg (D3D11VA hwaccel), measure decode FPS.
-// Build: cl /std:c++20 receiver.cpp /I<ffmpeg/include> /I<libusbmuxd/include>
-//        /link <ffmpeg.lib> <libusbmuxd.lib> ws2_32.lib
+// receiver.exe: finds the iPhone (usbmux over USB, Personal Hotspot fallback,
+// --host direct TCP, or --wifi Bonjour discovery), validates every protocol
+// packet, gates on HEVC decoder-join points, and relays the still-compressed
+// stream to OBS as MPEG-TS on udp://127.0.0.1:12346. --gpu-ring is the old
+// D3D11 decode diagnostic.
+// Build: scripts/build_receiver_msys2.sh (mirrors the CI windows job).
 
 #include <cstdio>
 #include <algorithm>
@@ -44,8 +46,15 @@ extern "C" {
 }
 
 #define DEVICE_PORT 12345u
+// iPhone Personal Hotspot gateway, used when no Apple adapter is detected.
+static constexpr const char* kPersonalHotspotGateway = "172.20.10.1";
 // Set by the console control handler (Ctrl+C, Ctrl+Break, window close).
 static std::atomic<bool> g_stopRequested{false};
+// Signalled by main after the relay has closed and Winsock is cleaned up. The
+// close-window handler waits on it, because Windows ends the process as soon
+// as that handler returns.
+static HANDLE g_stoppedEvent = nullptr;
+static constexpr DWORD kCloseWaitMs = 4'000;
 
 struct DecodeTelemetry {
     bool d3d11_requested = false;
@@ -66,10 +75,24 @@ class ObsUdpRelay final {
 public:
     static constexpr const char* kUrl = "udp://127.0.0.1:12346?pkt_size=1316";
 
-    ~ObsUdpRelay() { Close(); }
+    ObsUdpRelay() = default;
+    ObsUdpRelay(const ObsUdpRelay&) = delete;             // owns FFmpeg contexts
+    ObsUdpRelay& operator=(const ObsUdpRelay&) = delete;
+
+    ~ObsUdpRelay() {
+        Close();
+        av_packet_free(&out_packet_);
+    }
 
     void BeginSession() {
         timestamp_clock_.BeginSession();
+    }
+
+    // The first Open failed: keep running (R-ENG-ERR) and let the recovery
+    // gate reopen the muxer on the next decoder-join AU.
+    void ArmRecovery() {
+        recovery_gate_.OnReopenFailure();
+        next_reopen_attempt_ = std::chrono::steady_clock::now();
     }
 
     bool Open(bool isRecovery) {
@@ -157,9 +180,12 @@ public:
         }
         if (!context_ || !stream_) return RelayWriteResult::Failed;
         const uint64_t relativeUs = timestamp_clock_.Rebase(timestampUs);
-        AVPacket* packet = av_packet_alloc();
+        // One packet reused for every write: av_interleaved_write_frame takes
+        // the reference and leaves the packet blank, so nothing is allocated per frame.
+        if (!out_packet_) out_packet_ = av_packet_alloc();
+        AVPacket* packet = out_packet_;
         if (!packet || av_packet_ref(packet, &source) < 0) {
-            av_packet_free(&packet);
+            if (packet) av_packet_unref(packet);
             if (reopenedForThisWrite) {
                 next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             }
@@ -172,10 +198,11 @@ public:
             ? candidatePts : std::max(candidatePts, last_mux_pts_ + 1);
         packet->dts = packet->pts;
         last_mux_pts_ = packet->pts;
-        packet->duration = av_rescale_q(16'667, AVRational{1, 1'000'000}, muxer_time_base_);
+        packet->duration = av_rescale_q(static_cast<int64_t>(RelayTimestampClock::kFrameDurationUs),
+                                        AVRational{1, 1'000'000}, muxer_time_base_);
         if (accessUnit.hasIdr) packet->flags |= AV_PKT_FLAG_KEY;
         const int status = av_interleaved_write_frame(context_, packet);
-        av_packet_free(&packet);
+        av_packet_unref(packet);
         if (status >= 0) {
             recovery_gate_.OnWriteSuccess();
             if (reopenedForThisWrite) {
@@ -241,6 +268,7 @@ private:
     RelayTimestampClock timestamp_clock_{};
     RelayRecoveryGate recovery_gate_{};
     int64_t last_mux_pts_ = AV_NOPTS_VALUE;
+    AVPacket* out_packet_ = nullptr;
     std::chrono::steady_clock::time_point next_write_error_log_{};
     std::chrono::steady_clock::time_point next_reopen_attempt_{};
 };
@@ -253,6 +281,28 @@ static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* f
     return formats[0];
 }
 
+// IPv4 adapters with their gateways, in `storage`. Returns nullptr on failure.
+// The list can grow between calls, so retry a few times on ERROR_BUFFER_OVERFLOW.
+static IP_ADAPTER_ADDRESSES* read_ipv4_adapters(std::vector<uint8_t>& storage) {
+    ULONG bytes = 16 * 1024;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        storage.resize(bytes);
+        auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
+        const ULONG status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
+                                                  nullptr, adapters, &bytes);
+        if (status == NO_ERROR) return adapters;
+        if (status != ERROR_BUFFER_OVERFLOW) return nullptr;
+    }
+    return nullptr;
+}
+
+// The iPhone USB network adapter (Apple Mobile Device Ethernet).
+static bool is_apple_adapter(const IP_ADAPTER_ADDRESSES* adapter) {
+    const wchar_t* name = adapter->FriendlyName ? adapter->FriendlyName : L"";
+    const wchar_t* description = adapter->Description ? adapter->Description : L"";
+    return wcsstr(name, L"Apple") || wcsstr(description, L"Apple");
+}
+
 // Windows can prefer an unrelated Wi-Fi default route when both Wi-Fi and the
 // iPhone USB-tether adapter have the same metric. Bind explicitly to the IPv4
 // address on the Apple adapter whose gateway is the requested iPhone host.
@@ -260,23 +310,12 @@ static bool bind_iphone_usb_interface(SOCKET socket, const char* host) {
     IN_ADDR requestedHost{};
     if (InetPtonA(AF_INET, host, &requestedHost) != 1) return false;
 
-    ULONG bytes = 16 * 1024;
-    std::vector<uint8_t> storage(bytes);
-    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
-    ULONG status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
-                                        nullptr, adapters, &bytes);
-    if (status == ERROR_BUFFER_OVERFLOW) {
-        storage.resize(bytes);
-        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
-        status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
-                                      nullptr, adapters, &bytes);
-    }
-    if (status != NO_ERROR) return false;
+    std::vector<uint8_t> storage;
+    IP_ADAPTER_ADDRESSES* adapters = read_ipv4_adapters(storage);
+    if (!adapters) return false;
 
     for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
-        const wchar_t* name = adapter->FriendlyName ? adapter->FriendlyName : L"";
-        const wchar_t* description = adapter->Description ? adapter->Description : L"";
-        if (!wcsstr(name, L"Apple") && !wcsstr(description, L"Apple")) continue;
+        if (!is_apple_adapter(adapter)) continue;
 
         bool gatewayMatches = false;
         for (auto* gateway = adapter->FirstGatewayAddress; gateway; gateway = gateway->Next) {
@@ -379,23 +418,12 @@ static SOCKET connect_tcp(const char* host, bool requireUsbInterface) {
 }
 
 static std::string discover_iphone_usb_host() {
-    ULONG bytes = 16 * 1024;
-    std::vector<uint8_t> storage(bytes);
-    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
-    ULONG status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
-                                        nullptr, adapters, &bytes);
-    if (status == ERROR_BUFFER_OVERFLOW) {
-        storage.resize(bytes);
-        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(storage.data());
-        status = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_GATEWAYS,
-                                      nullptr, adapters, &bytes);
-    }
-    if (status != NO_ERROR) return {};
+    std::vector<uint8_t> storage;
+    IP_ADAPTER_ADDRESSES* adapters = read_ipv4_adapters(storage);
+    if (!adapters) return {};
 
     for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
-        const wchar_t* name = adapter->FriendlyName ? adapter->FriendlyName : L"";
-        const wchar_t* description = adapter->Description ? adapter->Description : L"";
-        if (!wcsstr(name, L"Apple") && !wcsstr(description, L"Apple")) continue;
+        if (!is_apple_adapter(adapter)) continue;
         for (auto* gateway = adapter->FirstGatewayAddress; gateway; gateway = gateway->Next) {
             if (gateway->Address.lpSockaddr->sa_family != AF_INET) continue;
             char host[INET_ADDRSTRLEN]{};
@@ -419,12 +447,33 @@ static SOCKET connect_to_device(const char* host, bool directTcp) {
     // It does not rely on iPhone Personal Hotspot exposing an inbound port.
     usbmuxd_device_info_t *list = nullptr;
     const int count = usbmuxd_get_device_list(&list);
+    // With several Apple devices on USB, IPHONE_CAMERA_UDID picks one; without
+    // it the first USB device is used and the others are listed once.
+    const char* wantedUdid = std::getenv("IPHONE_CAMERA_UDID");
+    if (wantedUdid && *wantedUdid == '\0') wantedUdid = nullptr;
     const usbmuxd_device_info_t* usbDevice = nullptr;
+    int usbDeviceCount = 0;
     for (int index = 0; index < count; ++index) {
-        if (list[index].conn_type == CONNECTION_TYPE_USB) {
-            usbDevice = &list[index];
-            break;
+        if (list[index].conn_type != CONNECTION_TYPE_USB) continue;
+        ++usbDeviceCount;
+        const bool wanted = wantedUdid ? std::strcmp(list[index].udid, wantedUdid) == 0 : usbDevice == nullptr;
+        if (wanted && usbDevice == nullptr) usbDevice = &list[index];
+    }
+    static bool listedDevices = false;
+    if (usbDeviceCount > 1 && !wantedUdid && !listedDevices) {
+        listedDevices = true;
+        for (int index = 0; index < count; ++index) {
+            if (list[index].conn_type == CONNECTION_TYPE_USB) {
+                printf("INFO: USB Apple device udid=%s\n", list[index].udid);
+            }
         }
+        printf("INFO: %d Apple devices on USB; using the first. Set IPHONE_CAMERA_UDID to choose.\n",
+               usbDeviceCount);
+    }
+    static bool warnedMissingUdid = false;  // once, not on every 1 s retry
+    if (wantedUdid && usbDevice == nullptr && usbDeviceCount > 0 && !warnedMissingUdid) {
+        warnedMissingUdid = true;
+        fprintf(stderr, "WARN: no USB device with IPHONE_CAMERA_UDID=%s\n", wantedUdid);
     }
     if (usbDevice != nullptr) {
         const int device_handle = static_cast<int>(usbDevice->handle);
@@ -654,8 +703,9 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             const uint64_t deltaUs = h.timestamp_us - previousTimestampUs;
             // A 60 fps source should advance by about 16.7 ms. Count only
             // significant gaps so this remains useful if the encoder jitters.
-            if (deltaUs > 25'000) {
-                sourceGapFrames += (deltaUs + 8'333) / 16'666 - 1;
+            constexpr uint64_t kFrameUs = RelayTimestampClock::kFrameDurationUs;
+            if (deltaUs > kFrameUs * 3 / 2) {
+                sourceGapFrames += (deltaUs + kFrameUs / 2) / kFrameUs - 1;
             }
         }
         previousTimestampUs = h.timestamp_us;
@@ -860,7 +910,12 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
     // transport-stream continuity counters and the OBS-facing timestamp domain.
     // This helper also guarantees the relay closes while Winsock is still live.
     ObsUdpRelay relay;
-    if (obsUdpRelay && !relay.Open(false)) return 1;
+    if (obsUdpRelay && !relay.Open(false)) {
+        // Never exit on an OBS-side failure (R-ENG-ERR): keep receiving and
+        // reopen the relay on the first decoder-join AU.
+        fprintf(stderr, "WARN: OBS relay could not open; retrying on the next HEVC keyframe\n");
+        relay.ArmRecovery();
+    }
 
     while (!g_stopRequested.load()) {
         // Wi-Fi mode looks the phone up on every attempt: a DHCP lease may have
@@ -890,12 +945,19 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
 
 // Ctrl+C, Ctrl+Break and closing the console window all request a clean stop.
 // The relay then writes its MPEG-TS trailer and closes before WSACleanup.
+// The handler runs on its own thread.
 static BOOL WINAPI console_control_handler(DWORD event) {
     switch (event) {
         case CTRL_C_EVENT:
         case CTRL_BREAK_EVENT:
+            g_stopRequested.store(true);
+            return TRUE;
         case CTRL_CLOSE_EVENT:
             g_stopRequested.store(true);
+            // Windows terminates the process as soon as this handler returns
+            // (and after about 5 s regardless). Wait for main to finish the
+            // clean shutdown; every wait in the receiver is sliced at <= 250 ms.
+            if (g_stoppedEvent) WaitForSingleObject(g_stoppedEvent, kCloseWaitMs);
             return TRUE;
         default:
             return FALSE;
@@ -920,6 +982,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     disable_console_quick_edit();
+    g_stoppedEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     SetConsoleCtrlHandler(console_control_handler, TRUE);
 
     // Keep running across app restarts, lock/unlock recovery, and USB reconnects.
@@ -963,7 +1026,7 @@ int main(int argc, char** argv) {
     const std::string discoveredHost = (directTcp || wifiDiscover) ? std::string() : discover_iphone_usb_host();
     const std::string usbNetworkHost = directTcp ? directHost : explicitHost ? explicitHost :
         (environmentHost && *environmentHost ? environmentHost :
-         (discoveredHost.empty() ? "172.20.10.1" : discoveredHost));
+         (discoveredHost.empty() ? kPersonalHotspotGateway : discoveredHost));
     printf("INFO: iPhone Camera USB receiver build=%s\n",
            obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
     if (wifiDiscover) {
@@ -978,5 +1041,9 @@ int main(int argc, char** argv) {
     }
     const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost, directTcp, wifiDiscover);
     WSACleanup();
+    if (g_wifi.event) CloseHandle(g_wifi.event);
+    // Let a waiting close-window handler return now that shutdown is complete.
+    // The handle stays open: the handler thread may still be waiting on it.
+    if (g_stoppedEvent) SetEvent(g_stoppedEvent);
     return receiverStatus;
 }

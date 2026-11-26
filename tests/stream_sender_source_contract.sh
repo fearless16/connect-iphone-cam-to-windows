@@ -120,13 +120,38 @@ printf '%s\n' "$failed_case" | grep -q 'conn\.cancel()'
 grep -q 'func setWiFiEnabled' "$sender"
 # T3.3: Bonjour advertisement only while Wi-Fi mode is on; the plist declares the type.
 grep -Fq 'static let bonjourType = "_ipcamstream._tcp"' "$sender"
-grep -Fq 'newListener.service = NWListener.Service(name: nil, type: StreamSender.bonjourType)' "$sender"
+# Review fix (was name: nil): the default instance name is the device name, which
+# usually holds a curly apostrophe that the receiver's ASCII validator rejects.
+grep -Fq 'static let bonjourName = "iPhoneCameraStream"' "$sender"
+grep -Fq 'newListener.service = NWListener.Service(name: StreamSender.bonjourName, type: StreamSender.bonjourType)' "$sender"
 awk '/if wifiEnabled \{/ { armed = 1; next } armed && /NWListener\.Service/ { found = 1 } armed && /\}/ { exit } END { exit !found }' "$sender"
 grep -Fq '<string>_ipcamstream._tcp</string>' "$(dirname "$sender")/Info.plist"
 grep -Fq 'private var wifiEnabled = false' "$sender"
 grep -Fq 'if !wifiEnabled { params.prohibitedInterfaceTypes = [.wifi, .cellular] }' "$sender"
 grep -Fq 'params.serviceClass = .interactiveVideo' "$sender"
 grep -q 'var onWiFiAddress' "$sender"
+# Review fix: the Wi-Fi switch rebuilds only the listener, so a USB connection
+# keeps streaming (behavior covered by C10 in stream_sender_test.swift).
+wifi_body=$(tr -d '\r' < "$sender" | awk '
+  /func setWiFiEnabled\(/ { in_f = 1 }
+  in_f { print }
+  in_f && /^    }$/ { exit }
+')
+printf '%s\n' "$wifi_body" | grep -q 'rebuildListener'
+if printf '%s\n' "$wifi_body" | grep -q 'restartListening'; then
+  echo "setWiFiEnabled must not drop a USB connection through restartListening" >&2
+  exit 1
+fi
+# Review fix: the Wi-Fi address comes from the path monitor's Wi-Fi interface.
+if grep -q '"en0"' "$sender"; then
+  echo "StreamSender must not hardcode the Wi-Fi interface name" >&2
+  exit 1
+fi
+# Review fix: link windows carry their own drops and queue wait (C11), and
+# drop-triggered IDR requests are throttled.
+grep -q 'var drops: UInt64' "$sender"
+grep -q 'var maxQueueMs: Double' "$sender"
+grep -q 'keyFrameRequestInterval: TimeInterval = 0.5' "$sender"
 # T5.4: the sender reports whether the PC connected over Wi-Fi.
 grep -q 'onClientTransport' "$sender"
 # T5.8: link stats come from the transport counters, once per 2 s, from one
