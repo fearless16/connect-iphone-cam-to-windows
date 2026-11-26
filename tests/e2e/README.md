@@ -34,7 +34,8 @@ Each run prints `E2E_SUMMARY {json}` and `E2E PASS|FAIL <scenario>`, and keeps
 | `stall_timeout` | stops in the middle of a frame | payload timeout logged; reconnect; relaying resumes within 10 s |
 | `garbage` | a header with a bad magic | `invalid stream header`; session dropped; next session relays |
 | `oversize` | a header with `frame_size` = 16 MiB + 1 | session dropped without reading a payload; next session relays |
-| `burst` | 300 ms pause, then 18 queued frames at once | every frame relayed; reports `pts_minus_arrival_ms` |
+| `burst` | 300 ms pause, then 18 queued frames at once | every frame relayed; PTS never behind arrival, and back within 5 ms of its pre-pause offset (G5) |
+| `drift` | phone clock runs 1% fast for 20 s | relay PTS stays on the PC clock (G5): moves at most 15 ms against arrival |
 | `soak` | repeated sessions (`--duration`, `--session-seconds`) | every session relays; CC continuous; receiver private bytes and handle count stay flat |
 
 Frames carry their capture time on a 60 fps grid, like the phone's

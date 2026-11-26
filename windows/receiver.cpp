@@ -84,10 +84,6 @@ public:
         av_packet_free(&out_packet_);
     }
 
-    void BeginSession() {
-        timestamp_clock_.BeginSession();
-    }
-
     // The first Open failed: keep running (R-ENG-ERR) and let the recovery
     // gate reopen the muxer on the next decoder-join AU.
     void ArmRecovery() {
@@ -141,7 +137,9 @@ public:
         return true;
     }
 
-    RelayWriteResult Write(const AVPacket& source, uint64_t timestampUs,
+    // `arrivalUs` is the PC steady clock when the frame finished arriving; it
+    // sets the OBS timeline (G5). The phone timestamp is only diagnostics.
+    RelayWriteResult Write(const AVPacket& source, uint64_t arrivalUs,
                            const HevcAccessUnitInfo& accessUnit) {
         bool reopenedForThisWrite = false;
         // The stream size can change between sessions (quality presets). Re-read
@@ -179,7 +177,7 @@ public:
             reopenedForThisWrite = true;
         }
         if (!context_ || !stream_) return RelayWriteResult::Failed;
-        const uint64_t relativeUs = timestamp_clock_.Rebase(timestampUs);
+        const uint64_t relativeUs = arrival_clock_.Stamp(arrivalUs);
         // One packet reused for every write: av_interleaved_write_frame takes
         // the reference and leaves the packet blank, so nothing is allocated per frame.
         if (!out_packet_) out_packet_ = av_packet_alloc();
@@ -265,7 +263,7 @@ private:
     int width_ = 3840;
     int height_ = 2160;
     AVRational muxer_time_base_{1, 90'000};
-    RelayTimestampClock timestamp_clock_{};
+    ArrivalTimestampClock arrival_clock_{};
     RelayRecoveryGate recovery_gate_{};
     int64_t last_mux_pts_ = AV_NOPTS_VALUE;
     AVPacket* out_packet_ = nullptr;
@@ -627,7 +625,6 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     DecodeTelemetry decodeTelemetry{};
     GpuFramePublisher gpuPublisher{};
     AVCodecContext *dec = obsUdpRelay ? nullptr : init_decoder(decodeTelemetry);
-    if (relay) relay->BeginSession();
     StreamTimingStats timing;
     timing.BeginSession();
     AVPacket *packet = av_packet_alloc();
@@ -713,7 +710,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         frames++;
 
         if (obsUdpRelay) {
-            const RelayWriteResult written = relay->Write(*packet, h.timestamp_us, accessUnit);
+            const RelayWriteResult written = relay->Write(*packet, arrivalUs, accessUnit);
             if (written == RelayWriteResult::Failed) {
                 ++relayWriteFailures;
             } else if (written == RelayWriteResult::GateDrop) {

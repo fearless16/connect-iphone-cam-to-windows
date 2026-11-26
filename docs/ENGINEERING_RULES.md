@@ -65,8 +65,10 @@ Treat every byte from the network as untrusted.
 - Use `av_new_packet` (padding) for FFmpeg input.
 
 **R-ENG-TIME: Timestamps** (observed)
-Never subtract unsigned source timestamps directly. The relay timeline goes through
-`RelayTimestampClock`, and mux PTS stays strictly increasing.
+Never subtract unsigned source timestamps directly. The relay timeline follows PC
+arrival time through `ArrivalTimestampClock` (G5), never the phone clock, and is
+never reset between phone sessions. Mux PTS stays strictly increasing. The phone
+timestamp is diagnostics only (`StreamTimingStats` skew).
 
 **R-ENG-PERF: 4K60 hot path** (observed)
 Applies to per-frame paths:

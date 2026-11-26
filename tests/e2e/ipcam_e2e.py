@@ -640,7 +640,7 @@ def invalid_header_check(ctx, summary):
 
 
 # burst: a 300 ms pause, then 18 frames back to back.
-BURST_OFFSET_LIMIT_MS = None  # T2.5 (G5) sets a bound
+BURST_OFFSET_LIMIT_MS = 5.0  # G5: PTS follows arrival, so a burst cannot leave it late
 
 
 def burst_session(ph, conn, k):
@@ -668,8 +668,36 @@ def burst_check(ctx, summary):
                                        "before_pause": round(before[-1], 2), "last": round(offsets[-1], 2)}
     if BURST_OFFSET_LIMIT_MS is not None:
         drift = abs(offsets[-1] - before[-1])
+        check(min(offsets) > -BURST_OFFSET_LIMIT_MS, "burst frames are not stamped behind their arrival",
+              "min %.1f ms" % min(offsets))
         check(drift <= BURST_OFFSET_LIMIT_MS, "PTS returns to the arrival timeline after a burst",
               "offset moved %.1f ms" % drift)
+
+
+# drift: the phone clock runs 1% fast (real crystals differ by ~20-50 ppm, which
+# is 0.07-0.18 s per hour; 1% makes an hour of drift visible in 20 s). OBS
+# schedules frames by PTS, so a PTS timeline that outruns the PC clock is
+# delay that OBS adds and never drains.
+DRIFT_CLOCK_RATE = 1.01
+DRIFT_LIMIT_MS = 15.0
+
+
+def drift_session(ph, conn, k):
+    ph.stream(conn, k, start=0)
+
+
+def drift_check(ctx, summary):
+    common_checks(ctx, summary)
+    pes = ctx["ts"]["pes"]
+    offsets = pts_minus_arrival(pes)
+    settle = [o for p, o in zip(pes, offsets) if p.arrival_ns - pes[0].arrival_ns >= 2e9]
+    check(len(settle) > 600, "drift ran long enough", "%d PES after 2 s" % len(settle))
+    moved = settle[-1] - settle[0]
+    summary["pts_minus_arrival_ms"] = {"at_2s": round(settle[0], 2), "last": round(settle[-1], 2),
+                                       "moved": round(moved, 2)}
+    check(abs(moved) <= DRIFT_LIMIT_MS, "relay PTS follows the PC clock, not the phone clock",
+          "PTS moved %.1f ms against PC arrival with the phone clock %.0f%% fast"
+          % (moved, (DRIFT_CLOCK_RATE - 1) * 100))
 
 
 # soak: repeated sessions while the receiver's memory and handles are sampled.
@@ -704,7 +732,7 @@ def soak_check(ctx, summary):
               "%d -> %d" % (early_handles, late_handles))
 
 
-SCENARIOS = {
+SCENARIOS = {  # name: (seconds or None for --duration, session factory, checks[, phone clock rate])
     "steady": (6.0, lambda a: steady_session, steady_check),
     "midgop": (4.0, lambda a: midgop_session, midgop_check),
     "disconnect": (6.0, lambda a: disconnect_session, disconnect_check),
@@ -713,12 +741,14 @@ SCENARIOS = {
     "garbage": (4.0, lambda a: invalid_header_session(False), invalid_header_check),
     "oversize": (4.0, lambda a: invalid_header_session(True), invalid_header_check),
     "burst": (4.0, lambda a: burst_session, burst_check),
+    "drift": (20.0, lambda a: drift_session, drift_check, DRIFT_CLOCK_RATE),
     "soak": (None, lambda a: soak_session_fn(a.session_seconds), soak_check),
 }
 
 
 def run(args):
-    duration, make_session, verify = SCENARIOS[args.scenario]
+    duration, make_session, verify = SCENARIOS[args.scenario][:3]
+    clock_rate = SCENARIOS[args.scenario][3] if len(SCENARIOS[args.scenario]) > 3 else 1.0
     if duration is None:
         duration = args.duration
     units = load_access_units(FIXTURE)
@@ -726,7 +756,7 @@ def run(args):
     os.makedirs(workdir, exist_ok=True)
     print("E2E %s: workdir %s" % (args.scenario, workdir), flush=True)
     sink = UdpSink()
-    phone = FakePhone(units, make_session(args))
+    phone = FakePhone(units, make_session(args), clock_rate)
     receiver = None
     memory = []
     try:

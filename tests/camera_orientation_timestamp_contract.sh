@@ -54,8 +54,10 @@ grep -q 'ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon' "$project"
 
 # A stale or recovered sender must never underflow unsigned arithmetic or make
 # MPEG-TS packet timestamps regress.
-grep -q 'RelayTimestampClock' "$receiver"
-grep -q 'timestamp_clock_.Rebase(timestampUs)' "$receiver"
+# G5: relay timeline follows PC arrival time
+grep -q 'ArrivalTimestampClock' "$receiver"
+grep -q 'arrival_clock_.Stamp(arrivalUs)' "$receiver"
+grep -q 'relay->Write(\*packet, arrivalUs, accessUnit)' "$receiver"
 grep -q 'last_mux_pts_' "$receiver"
 grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
 ! grep -q 'timestampUs - first_timestamp_us_' "$receiver"

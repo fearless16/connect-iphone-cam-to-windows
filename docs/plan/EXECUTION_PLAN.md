@@ -1304,7 +1304,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T2.3 | docs/obs-latency-and-av-sync | H | T2.1, T2.2 | — | DONE | 2026-11-25 | Docs only; no measured numbers yet (needs a device) |
 | DC-2 | (owner) | — | T2.1–T2.3 | — | TODO | | decides G3/G5/G6 |
 | T2.4 | perf/ios-encoder-latency | S | DC-2 | G3 | TODO | | |
-| T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | TODO | | |
+| T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | DONE-PENDING-MERGE | 2026-11-26 | Stacked on fix/receiver-fast-reconnect; not pushed. New e2e drift (phone clock 1% fast): PTS vs arrival moved 179.6 ms before, 0.04 ms after; burst min offset -299 ms -> 0 ms. BeginSession removed (contract pin changed with reason). CI not run; DC-2 30-min repeat open |
 | T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | TODO | | optional; mini-plan first |
 | T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | TODO | | |
 | T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013 (app built, Swift tests passed). Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
