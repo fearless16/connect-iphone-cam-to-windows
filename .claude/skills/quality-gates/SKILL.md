@@ -20,7 +20,7 @@ machine-enforced instead of written down.
 |---|---|---|
 | `tests/architecture_boundary_contract.sh` | R-ARCH-1..7 dependency direction | check.sh, CI (Windows job) |
 | `tests/protocol_parity_contract.sh` | C header ↔ Swift mirror ↔ port parity | check.sh, CI |
-| `tests/test_registry_contract.sh` | Every test runs in CI **and** check.sh; shell hygiene; no `NDEBUG` | check.sh, CI |
+| `tests/test_registry_contract.sh` | Every test runs in CI **and** check.sh; shell hygiene (no bare `! grep`: `set -e` ignores it, so write "must not contain" checks with `forbid` or `if … then exit 1`); no `NDEBUG` | check.sh, CI |
 | `tests/windows_ci_contract.sh` | CI composition; archived prototypes stay out of CI | check.sh, CI |
 | `tests/*_source_contract.sh`, `*_contract.sh` | Platform-bound behavior pinned by identifiers | check.sh, CI |
 | `tests/*_test.cpp` | Protocol, relay clock, recovery gate, HEVC join-point logic | CI; check.sh if g++/clang++ |

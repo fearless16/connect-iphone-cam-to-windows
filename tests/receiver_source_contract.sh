@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 receiver="$1"
 
@@ -17,7 +19,7 @@ grep -q 'select_d3d11_format' "$receiver"
 grep -q 'AV_PIX_FMT_D3D11' "$receiver"
 grep -q 'verified GPU decode' "$receiver"
 grep -q 'WSAEWOULDBLOCK' "$receiver"
-! grep -q 'SO_RCVTIMEO' "$receiver"
+forbid -q 'SO_RCVTIMEO' "$receiver"
 grep -q 'select(0' "$receiver"
 grep -q 'waiting for first HEVC frame' "$receiver"
 grep -q 'first HEVC packet' "$receiver"
@@ -51,13 +53,13 @@ grep -q 'ArrivalTimestampClock' "$receiver"
 grep -q 'arrival_clock_.Stamp(arrivalUs)' "$receiver"
 grep -q 'relay->Write(\*packet, arrivalUs, accessUnit)' "$receiver"
 grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
-! grep -q 'timestampUs - first_timestamp_us_' "$receiver"
+forbid -q 'timestampUs - first_timestamp_us_' "$receiver"
 grep -q 'muxer_time_base_ = stream_->time_base' "$receiver"
 grep -q 'relayWriteFailures' "$receiver"
-! grep -q 'if (obsUdpRelay && !relay.Write' "$receiver"
+forbid -q 'if (obsUdpRelay && !relay.Write' "$receiver"
 grep -q 'ReportWriteFailure' "$receiver"
 grep -q 'std::chrono::seconds(5)' "$receiver"
-! grep -q 'return status >= 0 || Report("av_interleaved_write_frame", status)' "$receiver"
+forbid -q 'return status >= 0 || Report("av_interleaved_write_frame", status)' "$receiver"
 grep -q -- '--host' "$receiver"
 grep -q 'requireUsbInterface' "$receiver"
 grep -q 'direct TCP' "$receiver"
@@ -82,10 +84,20 @@ grep -q 'enum class RelayWriteResult' "$receiver"
 grep -q 'RelayWriteResult::GateDrop' "$receiver"
 
 # Review fixes (fix/review-findings).
-# No disk I/O of any kind in the receiver (R-ENG-PERF): the dead stream dump is gone.
-! grep -q 'kSaveReceivedStream' "$receiver"
-! grep -q 'fopen' "$receiver"
-! grep -q 'received.h265' "$receiver"
+# No disk I/O on the video path (R-ENG-PERF): the dead stream dump is gone. The
+# only file the receiver writes is the T6.1 crash report, once per session on
+# its own thread: exactly one open, inside fetch_crash_report, nowhere else.
+forbid -q 'kSaveReceivedStream' "$receiver"
+forbid -q 'received.h265' "$receiver"
+outside_crash_fetch=$(awk '/^static void fetch_crash_report\(/{skip=1} !skip{print} skip && /^}/{skip=0}' "$receiver")
+if printf '%s\n' "$outside_crash_fetch" | grep -q 'fopen\|CreateFile\|ofstream'; then
+  echo "receiver.cpp opens a file outside fetch_crash_report (R-ENG-PERF)" >&2
+  exit 1
+fi
+[ "$(grep -c 'fopen(' "$receiver")" -eq 1 ] || {
+  echo "receiver.cpp must open exactly one file (the crash report)" >&2
+  exit 1
+}
 # An idle phone must not be mistaken for a dead one: the wait for the next
 # header has its own, longer limit than the wait for the rest of a packet.
 grep -q 'kHeaderIdleTimeoutMs = 15' "$receiver"

@@ -38,6 +38,11 @@ for path in "$tests_dir"/*; do
         fail "tests/$name must start with '#!/usr/bin/env sh'"
       tr -d '\r' < "$path" | sed -n 1,8p | grep -qx 'set -eu' ||
         fail "tests/$name must run 'set -eu' within its first 8 lines"
+      # set -e ignores a command negated with '!', so '! grep ...' can never
+      # fail a contract. Archived contracts do not run and are left as they are.
+      if ! listed "$name" "$archived" && grep -qE '^[[:space:]]*! ' "$path"; then
+        fail "tests/$name uses a bare '! command', which set -e ignores; use forbid() or if/exit"
+      fi
       ;;
     *.cpp|*.swift|*.ps1) ;;
     *) fail "unexpected file tests/$name; tests are .sh, .cpp, .swift or .ps1" ;;

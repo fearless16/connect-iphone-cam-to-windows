@@ -534,8 +534,8 @@ static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part, long
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     while (got < n) {
         if (g_stopRequested.load()) return false;
-        // Wait before each read instead of imposing a short SO_RCVTIMEO on the
-        // socket. A 4K HEVC packet can be large, and a brief USB scheduling
+        // Wait before each read instead of imposing a short receive timeout
+        // option on the socket. A 4K HEVC packet can be large, and a brief USB scheduling
         // stall must not be treated as a broken iPhone connection.
         fd_set readable{};
         FD_SET(fd, &readable);
@@ -976,13 +976,38 @@ static SOCKET connect_crash_port(const std::string& host, bool directTcp) {
     return connect_tcp(host.c_str(), true, port);  // Personal Hotspot fallback
 }
 
-static std::string crash_report_directory() {
-    char path[MAX_PATH]{};
-    const DWORD length = GetModuleFileNameA(nullptr, path, MAX_PATH);
-    std::string directory(path, length < MAX_PATH ? length : 0);
-    const size_t slash = directory.find_last_of("\\/");
-    directory = slash == std::string::npos ? std::string(".") : directory.substr(0, slash);
-    return directory + "\\crash-reports";
+// Wide (UTF-16) paths throughout: the ANSI APIs turn a non-ASCII folder name
+// (for example a user name outside the ANSI code page) into '?' and fail.
+static std::wstring crash_report_directory() {
+    std::vector<wchar_t> path(MAX_PATH);
+    DWORD length = 0;
+    // Long-path aware: grow the buffer while the module path is truncated.
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length < path.size()) break;
+        path.resize(path.size() * 2);
+        length = 0;
+    }
+    std::wstring directory(path.data(), length);
+    const size_t slash = directory.find_last_of(L"\\/");
+    directory = slash == std::wstring::npos ? std::wstring(L".") : directory.substr(0, slash);
+    return directory + L"\\crash-reports";
+}
+
+// The file name is ASCII by construction (crash_report::FileName).
+static std::wstring widen_ascii(const std::string& text) {
+    return std::wstring(text.begin(), text.end());
+}
+
+// UTF-8 for the log line; a failed conversion logs an empty path, not garbage.
+static std::string utf8_path(const std::wstring& path) {
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), static_cast<int>(path.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return std::string();
+    std::string out(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path.c_str(), static_cast<int>(path.size()),
+                        out.data(), bytes, nullptr, nullptr);
+    return out;
 }
 
 static void fetch_crash_report(std::string host, bool directTcp) {
@@ -996,13 +1021,14 @@ static void fetch_crash_report(std::string host, bool directTcp) {
         } else if (length) {
             std::vector<uint8_t> payload(*length);
             if (read_exact(fd, payload.data(), payload.size(), "crash report", 10'000)) {
-                const std::string directory = crash_report_directory();
-                CreateDirectoryA(directory.c_str(), nullptr);  // fine if it already exists
+                const std::wstring directory = crash_report_directory();
+                CreateDirectoryW(directory.c_str(), nullptr);  // fine if it already exists
                 SYSTEMTIME now{};
                 GetLocalTime(&now);
-                const std::string path = directory + "\\" +
-                    crash_report::FileName(now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
-                FILE* file = std::fopen(path.c_str(), "wb");
+                const std::wstring widePath = directory + L"\\" + widen_ascii(
+                    crash_report::FileName(now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond));
+                const std::string path = utf8_path(widePath);
+                FILE* file = _wfopen(widePath.c_str(), L"wb");
                 const bool saved = file != nullptr &&
                     std::fwrite(payload.data(), 1, payload.size(), file) == payload.size();
                 if (file != nullptr) std::fclose(file);

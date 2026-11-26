@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 workflow="$1"
 
@@ -34,16 +36,16 @@ grep -q 'name: windows-binaries' "$workflow"
 # Review fix: the artifact once shipped receiver.exe alone (45 KB) because the
 # DLL filter looked in /mingw64/bin while the toolchain is UCRT64. Copy from the
 # active MSYS2 prefix and fail the job if no DLL was copied.
-! grep -q 'mingw64' "$workflow"
+forbid -q 'mingw64' "$workflow"
 grep -q 'MSYSTEM_PREFIX' "$workflow"
 grep -q 'no runtime DLLs were copied next to receiver.exe' "$workflow"
 # libswscale is used only by the archived virtual camera.
-! grep -q 'libswscale' "$workflow"
+forbid -q 'libswscale' "$workflow"
 
 # The only supported single-user Windows path is receiver.exe -> OBS UDP.
 # Archived DirectShow and Media Foundation prototypes must not consume normal CI
 # time or imply that a virtual-camera artifact is supported.
-! grep -q 'tests/virtual_camera_source_contract.sh' "$workflow"
-! grep -q 'tests/virtual_camera_contract_test.cpp' "$workflow"
-! grep -q '^  windows-virtual-camera:' "$workflow"
-! grep -q 'name: windows-virtual-camera' "$workflow"
+forbid -q 'tests/virtual_camera_source_contract.sh' "$workflow"
+forbid -q 'tests/virtual_camera_contract_test.cpp' "$workflow"
+forbid -q '^  windows-virtual-camera:' "$workflow"
+forbid -q 'name: windows-virtual-camera' "$workflow"

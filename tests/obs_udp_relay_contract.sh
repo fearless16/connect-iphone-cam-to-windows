@@ -3,6 +3,8 @@
 # receiver; this test keeps lifecycle and timestamp invariants checkable even
 # where FFmpeg headers/libraries are unavailable to the local test runner.
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 receiver="$1"
 
@@ -35,7 +37,7 @@ grep -q 'arrival_clock_.Stamp(arrivalUs)' "$receiver"
 grep -q 'relay->Write(\*packet, arrivalUs, accessUnit)' "$receiver"
 grep -q "av_rescale_q(static_cast<int64_t>(relativeUs)" "$receiver"
 grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
-! grep -q 'timestampUs - first_timestamp_us_' "$receiver"
+forbid -q 'timestampUs - first_timestamp_us_' "$receiver"
 
 # The UDP muxer and timestamp clock must outlive individual iPhone TCP
 # sessions. Reopening them per session resets both MPEG-TS continuity counters
@@ -43,8 +45,8 @@ grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
 grep -q 'static void receive_session(SOCKET fd, ObsUdpRelay\* relay)' "$receiver"
 # G5: arrival time is one continuous PC clock, so nothing restarts the relay
 # timeline per phone session (the per-session BeginSession rebase is gone).
-! grep -q 'relay->BeginSession()' "$receiver"
-! grep -q 'arrival_clock_ = ' "$receiver"
+forbid -q 'relay->BeginSession()' "$receiver"
+forbid -q 'arrival_clock_ = ' "$receiver"
 [ "$(grep -c 'ObsUdpRelay relay;' "$receiver")" -eq 1 ]
 grep -q 'receive_session(fd, obsUdpRelay ? &relay : nullptr)' "$receiver"
 
@@ -71,8 +73,8 @@ grep -q 'next_reopen_attempt_ = now + std::chrono::seconds(1)' "$receiver"
 grep -q '#include "hevc_access_unit.h"' "$receiver"
 grep -q 'InspectHevcAccessUnit(packet->data, h.frame_size)' "$receiver"
 grep -q 'accessUnit.IsDecoderJoinPoint()' "$receiver"
-! grep -q 'contains_hevc_idr' "$receiver"
-! grep -q 'exit(.*OBS relay' "$receiver"
+forbid -q 'contains_hevc_idr' "$receiver"
+forbid -q 'exit(.*OBS relay' "$receiver"
 
 # A reopened MPEG-TS transport resets continuity counters. Tell OBS about that
 # discontinuity only on recovery; the initial muxer must remain a normal start.

@@ -146,7 +146,8 @@ final class CrashReportService: NSObject, MXMetricManagerSubscriber {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { data, _, _, _ in
                 if data?.first == CrashReportFraming.ack {
                     self.queue.async {
-                        self.store.clear()
+                        // A newer report saved during delivery stays pending.
+                        guard self.store.clear(matching: payload) else { return }
                         self.onStatus?("Crash report delivered to the PC • local copy deleted")
                         self.stopListening()
                     }

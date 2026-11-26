@@ -43,6 +43,15 @@ struct CrashReportStoreTests {
         expect(store.pending == nil, "clear removes the report")
         store.clear()   // clearing twice must not fail
 
+        // An ack for a delivered report never deletes a newer one saved meanwhile.
+        expect(store.save(Data("old".utf8)), "save the report being delivered")
+        expect(store.save(Data("new".utf8)), "a newer report arrives during delivery")
+        expect(!store.clear(matching: Data("old".utf8)), "the old ack does not clear the newer report")
+        expect(store.pending == Data("new".utf8), "the newer report is still pending")
+        expect(store.clear(matching: Data("new".utf8)), "the matching ack clears it")
+        expect(store.pending == nil, "nothing pending after the matching ack")
+        expect(!store.clear(matching: Data("new".utf8)), "a repeated ack finds nothing to clear")
+
         // Envelope: valid JSON with context, within the cap.
         let when = Date(timeIntervalSince1970: 0)
         let small = CrashReportStore.envelope(diagnostics: Data("{\"crashDiagnostics\":[{\"x\":1}]}".utf8),

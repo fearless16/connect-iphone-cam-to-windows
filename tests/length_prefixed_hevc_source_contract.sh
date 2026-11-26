@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 converter="${1:-ios/LengthPrefixedHEVC.swift}"
 camera="${2:-ios/CameraStreamer.swift}"
@@ -15,14 +17,14 @@ grep -q 'guard nalLength >= 2' "$converter"
 grep -q 'LengthPrefixedHEVC.convert' "$camera"
 grep -q 'let metadataMarksKeyframe' "$camera"
 grep -q 'if let metadataMarksKeyframe,' "$camera"
-! grep -q 'as? Bool ?? false' "$camera"
+forbid -q 'as? Bool ?? false' "$camera"
 grep -q 'LengthPrefixedHEVC.containsIDR(encodedAccessUnit)' "$camera"
 grep -q 'HEVC IDR marked NotSync' "$camera"
 grep -q 'Metadata keyframe lacks HEVC IDR' "$camera"
 grep -q 'isKeyframe: containsRandomAccessPicture' "$camera"
-! grep -q 'isKeyframe: metadataMarksKeyframe' "$camera"
+forbid -q 'isKeyframe: metadataMarksKeyframe' "$camera"
 grep -q 'recordMalformedAccessUnitDrop' "$camera"
-! grep -q 'guard nalLen > 0.*else { break }' "$camera"
+forbid -q 'guard nalLen > 0.*else { break }' "$camera"
 awk '
   /func writeAnnexB\(sampleBuffer:/ { in_writer = 1 }
   in_writer && /LengthPrefixedHEVC\.convert/ { convert_line = NR }

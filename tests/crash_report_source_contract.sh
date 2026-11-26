@@ -18,10 +18,15 @@ grep -Fq 'CrashReportFraming.port' "$service"
 if grep -q '12345' "$service"; then echo "crash report service must not use the stream port" >&2; exit 1; fi
 
 # The listener exists only while a report is waiting, and the phone deletes its
-# copy only after the PC acknowledges.
+# copy only after the PC acknowledges, and only if it is still the delivered
+# report (a newer one saved during delivery must survive the older ack).
 grep -Fq 'store.pending != nil' "$service"
 grep -Fq 'data?.first == CrashReportFraming.ack' "$service"
-grep -q 'self.store.clear()' "$service"
+grep -Fq 'self.store.clear(matching: payload)' "$service"
+if grep -Fq 'self.store.clear()' "$service"; then
+  echo "crash report service must clear only the delivered report" >&2
+  exit 1
+fi
 
 # Never part of the video path: no frame, encoder or packet-framing code.
 for forbidden in StreamHeader AVCapture VTCompressionSession sampleBuffer; do
@@ -54,6 +59,16 @@ grep -q 'std::vector<uint8_t> payload(\*length)' "$receiver"
 grep -q 'crash_report::kAck' "$receiver"
 grep -q 'std::thread(fetch_crash_report' "$receiver"
 grep -q 'start_crash_report_fetch(target' "$receiver"
+
+# The report folder sits next to receiver.exe, whose path may hold non-ASCII
+# characters: wide-character file APIs only, never their ANSI forms.
+grep -Fq 'GetModuleFileNameW(' "$receiver"
+grep -Fq 'CreateDirectoryW(' "$receiver"
+grep -Fq '_wfopen(' "$receiver"
+if grep -qE 'GetModuleFileNameA\(|CreateDirectoryA\(|std::fopen\(' "$receiver"; then
+  echo "receiver.cpp must save crash reports through wide-character paths" >&2
+  exit 1
+fi
 
 # The fetch thread logs while the main thread does: every line must be one write
 # (log_line), or redirected logs interleave byte by byte and garble both lines.
