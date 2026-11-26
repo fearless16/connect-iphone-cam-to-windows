@@ -202,11 +202,11 @@ while it is `PENDING`.
 
 | Gate | Decision | Recommendation | Blocks | Status |
 |---|---|---|---|---|
-| G1 | Allow test-only tooling: Python 3 (stdlib only) plus the `ffmpeg`/`ffprobe` CLIs, locally and in CI | Approve. It's the only practical way to get end-to-end tests without an iPhone | T0.5, T0.6 | PENDING |
+| G1 | Allow test-only tooling: Python 3 (stdlib only) plus the `ffmpeg`/`ffprobe` CLIs, locally and in CI | Approve. It's the only practical way to get end-to-end tests without an iPhone | T0.5, T0.6 | APPROVED (2026-11-26) |
 | G2 | Add Docker for local checks (and optionally a receiver cross-build). Needs Docker Desktop with WSL2 on this PC | Approve for checks. The cross-build (T0.8) is optional | T0.2, T0.8 | PENDING |
-| G3 | Keyframe interval 2 s → 1 s (`MaxKeyFrameInterval` 120 → 60) | Approve. Halves the worst-case recovery and OBS join time for a small quality cost | T2.4 | PENDING |
-| G4 | Pause HEVC encoding while no PC is connected (preview stays live) | Approve. Less heat, fewer thermal interruptions | T2.7 | PENDING |
-| G5 | Relay PTS taken from PC arrival time instead of the phone clock | Approve **only if** DC-2 shows delay growing over a session | T2.5 | PENDING |
+| G3 | Keyframe interval 2 s → 1 s (`MaxKeyFrameInterval` 120 → 60) | Approve. Halves the worst-case recovery and OBS join time for a small quality cost | T2.4 | APPROVED (2026-11-26) |
+| G4 | Pause HEVC encoding while no PC is connected (preview stays live) | Approve. Less heat, fewer thermal interruptions | T2.7 | APPROVED (2026-11-26) |
+| G5 | Relay PTS taken from PC arrival time instead of the phone clock | Approve **only if** DC-2 shows delay growing over a session | T2.5 | APPROVED (2026-11-26) |
 | G6 | Relay to OBS over loopback TCP instead of UDP (lossless, joins OBS at an IDR) | Decide after DC-2/T0.6 data. Biggest change in the plan | T2.6 | PENDING |
 | G7 | Wi-Fi exposure model. **A:** opt-in switch, off by default; when off, the phone refuses Wi-Fi and cellular connections; no authentication. **B:** A plus a pairing PIN (needs a protocol change, D3) | **A** now; B later if ever needed | T3.1, T3.3 | APPROVED (2026-11-26, option A) |
 | G8 | Wi-Fi bitrate 25 Mbps (USB stays 40 Mbps) | Superseded by G8′ ([STREAMER_FEATURES_PLAN.md](STREAMER_FEATURES_PLAN.md) section 4) | T3.2 | SUPERSEDED |
@@ -1284,8 +1284,8 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T0.2 | chore/docker-check-gate | H | T0.0 | G2 | TODO | | |
 | T0.3 | chore/msys2-local-build | H | T0.0 | — | DONE | 2026-11-25 | Merged to main; script UNVERIFIED (no MSYS2 g++ on this PC), owner runs it once |
 | T0.4 | feat/receiver-host-flag | S | T0.0 | — | DONE | 2026-11-25 | Merged to main; receiver link unverified locally, CI must confirm |
-| T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | TODO | | |
-| T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | TODO | | |
+| T0.5 | test/receiver-e2e-harness | S | T0.3, T0.4 | G1 | DONE-PENDING-MERGE | 2026-11-26 | Branch test/receiver-e2e-harness (stacked on fix/review-findings-2, not pushed: owner said local only). All scenarios pass locally against receiver.exe (MSYS2 MINGW64). Fixture needs open-gop=0 (the plan command gave CRA, not IDR). Receiver stdout made unbuffered. CI not run |
+| T0.6 | test/receiver-e2e-faults | S | T0.5 | G1 | DONE-PENDING-MERGE | 2026-11-26 | Same branch as T0.5. stall_timeout stalls mid-frame (a between-frame 7 s stall is under the 15 s header timeout). Added soak (memory + handles). All pass locally; CI not run |
 | T0.7 | test/ios-sender-socket-test | S | T0.1 | — | DONE | 2026-11-25 | Swift test unverified locally; CI macOS must confirm |
 | T0.8 | chore/docker-receiver-cross-build | O | T0.2 | G2 | TODO | | optional |
 | T1.1 | diag/ios-disconnect-reasons | S | T0.0 | — | DONE | 2026-11-25 | Merged to main; Swift build unverified locally, CI macOS must confirm |

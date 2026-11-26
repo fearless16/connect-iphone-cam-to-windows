@@ -116,6 +116,20 @@ swift_test tests/stream_header_test.swift shared/StreamHeader.swift
 swift_test tests/quality_advisor_test.swift ios/QualityAdvisor.swift
 swift_test tests/stream_sender_test.swift ios/StreamSender.swift shared/StreamHeader.swift
 
+echo "== End-to-end (receiver.exe)"
+# Fake iPhone -> real receiver.exe -> UDP sink (tests/e2e, gate G1). Build the
+# receiver first: sh scripts/build_receiver_msys2.sh
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    exe="${RECEIVER_EXE:-build/windows-binaries/receiver.exe}"
+    if [ -f "$exe" ]; then
+      run "receiver e2e" sh tests/receiver_e2e_test.sh "$exe" "steady midgop disconnect stall stall_timeout garbage oversize burst soak"
+    else
+      skip "tests/receiver_e2e_test.sh" "receiver.exe not built (sh scripts/build_receiver_msys2.sh)"
+    fi ;;
+  *) skip "tests/receiver_e2e_test.sh" "needs Windows (CI windows job runs it)" ;;
+esac
+
 echo "== CI-only builds"
 skip "receiver.exe link" "needs MSYS2 FFmpeg + libusbmuxd (CI windows job)"
 skip "xcodebuild iPhoneCameraStream" "needs Xcode; unsigned build runs in CI ios job"

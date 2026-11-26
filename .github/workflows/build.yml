@@ -113,7 +113,7 @@ jobs:
             ios/StreamSender.swift \
             ios/CameraViewController.swift
 
-      - name: Package unsigned IPA (TrollStore-ready)
+      - name: Package unsigned IPA (sign it with your Apple ID, docs/BACKDOOR.md)
         run: |
           APP="$GITHUB_WORKSPACE/ios/build/Release-iphoneos/iPhoneCameraStream.app"
           test -d "$APP"
@@ -152,6 +152,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-libusbmuxd
+            mingw-w64-ucrt-x86_64-python
             git
             make
 
@@ -221,6 +222,11 @@ jobs:
           dll_count=$(ls windows-binaries/*.dll 2>/dev/null | wc -l)
           [ "$dll_count" -gt 0 ] || { echo "no runtime DLLs were copied next to receiver.exe"; exit 1; }
           ls -lh windows-binaries/
+
+      - name: Receiver end-to-end tests (fake iPhone -> receiver.exe -> UDP sink)
+        run: |
+          cd "${{ github.workspace }}"
+          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst soak"
 
       - uses: actions/upload-artifact@v7
         with:

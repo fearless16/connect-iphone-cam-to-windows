@@ -93,6 +93,9 @@ Applies to per-frame paths:
 - Shell tests start with `#!/usr/bin/env sh` and `set -eu`, take file paths as arguments with
   defaults, and strip `\r` before parsing, because Windows checkouts are CRLF.
 - Never compile tests with `NDEBUG`.
+- End-to-end: `tests/receiver_e2e_test.sh` drives `tests/e2e/` (Python 3 stdlib
+  + ffmpeg CLI only; approved gate G1). It runs the real `receiver.exe` against a
+  fake iPhone, including fault scenarios and a memory/handle soak.
 
 **R-ENG-DOCS: User-facing docs** (observed)
 Update the user-facing docs in the same change when you change any of these:
@@ -105,6 +108,7 @@ The user-facing docs are `README.md`, `docs/QUICKSTART.md`, `OBS-SETUP.md`, `doc
 **R-ENG-DEPS: Dependencies** (observed)
 Runtime dependencies are system frameworks, FFmpeg, and libusbmuxd only. Adding any other
 dependency is a human-judgment decision.
+Test-only tooling: Python 3 stdlib and the ffmpeg/ffprobe CLIs (G1).
 
 **R-ENG-SEC: Network exposure** (proposed)
 Do not widen network exposure:

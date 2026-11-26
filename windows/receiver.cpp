@@ -976,6 +976,10 @@ static void disable_console_quick_edit() {
 }
 
 int main(int argc, char** argv) {
+    // Redirected to a file (`receiver.exe > log.txt` for a long stream), stdout
+    // is fully buffered: INFO lines would land out of order with stderr and be
+    // lost if the process dies. At most one STAT line per 2 s, so this is cheap.
+    setvbuf(stdout, nullptr, _IONBF, 0);
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
         fprintf(stderr, "ERROR: WSAStartup failed\n");
