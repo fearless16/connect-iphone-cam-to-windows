@@ -73,6 +73,16 @@ jobs:
             -o /tmp/quality_advisor_test
           /tmp/quality_advisor_test
 
+      - name: Test crash report store and framing
+        run: |
+          xcrun swiftc -swift-version 5 \
+            ios/CrashReportStore.swift \
+            tests/crash_report_store_test.swift \
+            -o /tmp/crash_report_store_test
+          /tmp/crash_report_store_test
+          sh tests/crash_report_source_contract.sh \
+            ios/CrashReportService.swift ios/CameraStreamer.swift windows/receiver.cpp
+
       - name: Test StreamSender over real sockets
         run: |
           # Top-level test code is only legal in a file named main.swift.
@@ -206,6 +216,11 @@ jobs:
             -o wifi_discovery_test.exe
           ./wifi_discovery_test.exe
           g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/crash_report_test.cpp" \
+            -o crash_report_test.exe
+          ./crash_report_test.exe
+          g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
             "${{ github.workspace }}/windows/gpu_frame_publisher.cpp" \
@@ -226,7 +241,7 @@ jobs:
       - name: Receiver end-to-end tests (fake iPhone -> receiver.exe -> UDP sink)
         run: |
           cd "${{ github.workspace }}"
-          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart drift soak"
+          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart crash_report drift soak"
 
       - uses: actions/upload-artifact@v7
         with:

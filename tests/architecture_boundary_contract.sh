@@ -60,7 +60,10 @@ done
 # R-ARCH-4: pure logic units compile standalone in tests.
 only_imports R-ARCH-4 ios/LengthPrefixedHEVC.swift Foundation CoreMedia
 only_imports R-ARCH-4 ios/QualityAdvisor.swift Foundation
-for header in windows/relay_timestamp.h windows/relay_recovery.h windows/hevc_access_unit.h windows/hevc_sps.h windows/stream_timing.h windows/wifi_discovery.h; do
+only_imports R-ARCH-4 ios/CrashReportStore.swift Foundation
+# T6.1: the crash-report service owns MetricKit and its own side-channel listener.
+only_imports R-ARCH-3 ios/CrashReportService.swift Foundation MetricKit Network
+for header in windows/relay_timestamp.h windows/relay_recovery.h windows/hevc_access_unit.h windows/hevc_sps.h windows/stream_timing.h windows/wifi_discovery.h windows/crash_report.h; do
   for inc in $(includes "$header"); do
     case "$inc" in
       \<*.h\>|\"*) fail R-ARCH-4 "$header includes $inc; portable relay logic may include only C++ standard headers" ;;

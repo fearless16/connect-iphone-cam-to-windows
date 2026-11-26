@@ -395,7 +395,7 @@ class TsAnalyzer:
         self._finish_pes()
         self.capture.close()
         return {"video_pid": self.video_pid, "cc_errors": self.cc_errors, "pes": self.pes,
-                "stray": self.stray}
+                "stray": self.stray, "pids": len(self.last_cc)}
 
 
 # --------------------------------------------------------------------------
@@ -756,6 +756,11 @@ def obs_restart_check(ctx, summary):
     common_checks(ctx, summary)
     phone, pes = ctx["phone"], ctx["ts"]["pes"]
     check(len(phone.events_named("accept")) == 1, "the phone session survives an OBS restart")
+    # Packets sent while OBS was away are lost, so each TS PID shows one gap;
+    # more than one per PID would be corruption, not the outage.
+    cc, pids = ctx["ts"]["cc_errors"], ctx["ts"]["pids"]
+    check(cc <= pids, "at most one continuity gap per PID across the outage",
+          "%d gaps, %d PIDs" % (cc, pids))
     up = phone.events_named("obs_up")
     check(up, "OBS came back")
     after = [p for p in pes if p.arrival_ns > up[0][1]]
@@ -771,6 +776,109 @@ def obs_restart_check(ctx, summary):
 # is 0.07-0.18 s per hour; 1% makes an hour of drift visible in 20 s). OBS
 # schedules frames by PTS, so a PTS timeline that outruns the PC clock is
 # delay that OBS adds and never drains.
+# crash_report (T6.1): the phone offers a crash report on port 12347 at each
+# session start. Session 0 sends a bad magic, session 1 a 4 GiB length, session
+# 2 a valid report. Only the valid one may be saved and acknowledged, and video
+# must flow in every session.
+CRASH_PORT = 12347
+CRASH_ACK = b"\x06"
+CRASH_PAYLOAD = b'{"e2e":"crash report","token":"%d"}' % os.getpid()
+CRASH_REPLIES = [
+    b"XCRP" + struct.pack("<I", len(CRASH_PAYLOAD)) + CRASH_PAYLOAD,
+    b"ICRP" + struct.pack("<I", 0xFFFFFFFF),
+    b"ICRP" + struct.pack("<I", len(CRASH_PAYLOAD)) + CRASH_PAYLOAD,
+]
+
+
+class CrashPort:
+    """The phone's crash-report side channel: one scripted reply per connection."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.acks = []  # (connection index, bytes the receiver answered)
+        self.stop_event = threading.Event()
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            self.server.bind(("127.0.0.1", CRASH_PORT))
+        except OSError as error:
+            self.server.close()
+            raise ScenarioFailure("crash port could not bind 127.0.0.1:%d: %s" % (CRASH_PORT, error))
+        self.server.listen(4)
+        self.server.settimeout(0.2)
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        index = 0
+        while not self.stop_event.is_set():
+            try:
+                conn, _ = self.server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with conn:
+                if index < len(self.replies):
+                    conn.settimeout(3)
+                    try:
+                        conn.sendall(self.replies[index])
+                        answer = conn.recv(1)
+                    except OSError:
+                        answer = b""
+                    self.acks.append((index, answer))
+            index += 1
+
+    def stop(self):
+        self.stop_event.set()
+        self.server.close()
+        self.thread.join(5)
+
+
+def crash_report_session(ph, conn, k):
+    ph.stream(conn, k, start=0, seconds=None if k >= 2 else 1.5)
+
+
+def crash_report_check(ctx, summary):
+    common_checks(ctx, summary)
+    phone, pes, crash = ctx["phone"], ctx["ts"]["pes"], ctx["crash"]
+    accepts = phone.events_named("accept")
+    check(len(accepts) >= 3, "three phone sessions", "%d" % len(accepts))
+    for name, ns, k in accepts[:3]:
+        check(first_pes_after(pes, ns) is not None, "session %d relays video" % k)
+    answers = dict(crash.acks)
+    summary["crash_answers"] = {str(k): v.hex() for k, v in answers.items()}
+    check(answers.get(0) == b"", "bad magic: no ack", repr(answers.get(0)))
+    check(answers.get(1) == b"", "4 GiB length: rejected before allocating, no ack", repr(answers.get(1)))
+    check(answers.get(2) == CRASH_ACK, "valid report acknowledged", repr(answers.get(2)))
+    log = ctx["log"]
+    check(log.count("ignoring an invalid crash report header") == 2, "both bad headers logged")
+    check(log.count("iPhone crash report saved") == 1, "one report saved")
+    saved = ctx["crash_files"]
+    summary["crash_files"] = [os.path.basename(p) for p in saved]
+    check(len(saved) == 1, "exactly one new file in crash-reports", "%d" % len(saved))
+    check(ctx["ts"]["cc_errors"] == 0, "continuity counters survive the reconnects",
+          str(ctx["ts"]["cc_errors"]))
+
+
+def collect_crash_files(directory, before):
+    """New files in crash-reports whose bytes are this run's payload; removes them."""
+    found = []
+    if not os.path.isdir(directory):
+        return found
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if name in before or not os.path.isfile(path):
+            continue
+        with open(path, "rb") as f:
+            if f.read() == CRASH_PAYLOAD:
+                found.append(path)
+    for path in found:
+        os.remove(path)
+    if found and not os.listdir(directory):
+        os.rmdir(directory)
+    return found
+
+
 DRIFT_CLOCK_RATE = 1.01
 DRIFT_LIMIT_MS = 15.0
 
@@ -835,6 +943,7 @@ SCENARIOS = {  # name: (seconds or None for --duration, session factory, checks[
     "oversize": (4.0, lambda a: invalid_header_session(True), invalid_header_check),
     "burst": (4.0, lambda a: burst_session, burst_check),
     "obs_restart": (7.0, lambda a: obs_restart_session, obs_restart_check),
+    "crash_report": (7.0, lambda a: crash_report_session, crash_report_check),
     "drift": (20.0, lambda a: drift_session, drift_check, DRIFT_CLOCK_RATE),
     "soak": (None, lambda a: soak_session_fn(a.session_seconds), soak_check),
 }
@@ -853,9 +962,14 @@ def run(args):
     analyzer = TsAnalyzer(os.path.join(workdir, "capture.ts"))
     phone = FakePhone(units, make_session(args), clock_rate)
     phone.sink = sink
+    crash = None
+    crash_dir = os.path.join(os.path.dirname(os.path.abspath(args.receiver)), "crash-reports")
+    crash_before = set(os.listdir(crash_dir)) if os.path.isdir(crash_dir) else set()
     receiver = None
     memory = []
     try:
+        if args.scenario == "crash_report":
+            crash = CrashPort(CRASH_REPLIES)
         sink.start()
         phone.start()
         receiver = Receiver(args.receiver, workdir)
@@ -881,10 +995,13 @@ def run(args):
         sink.stop()
         if receiver:
             receiver.stop()
+        if crash:
+            crash.stop()
     for arrival, data in sink.take():
         analyzer.feed(arrival, data)
     ctx = {"alive": alive, "receiver": receiver, "phone": phone, "workdir": workdir,
-           "ts": analyzer.result(), "log": receiver.text(), "memory": memory}
+           "ts": analyzer.result(), "log": receiver.text(), "memory": memory,
+           "crash": crash, "crash_files": collect_crash_files(crash_dir, crash_before)}
     summary = {"scenario": args.scenario, "seconds": duration, "datagrams": sink.count,
                "sink_rcvbuf": args.sink_rcvbuf,
                "clean_stop": receiver.clean_stop}

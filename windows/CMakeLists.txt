@@ -26,6 +26,10 @@ if(BUILD_TESTING)
     target_include_directories(wifi_discovery_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME wifi_discovery_test COMMAND wifi_discovery_test)
 
+    add_executable(crash_report_test ../tests/crash_report_test.cpp)
+    target_include_directories(crash_report_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME crash_report_test COMMAND crash_report_test)
+
     add_executable(hevc_access_unit_test ../tests/hevc_access_unit_test.cpp)
     target_include_directories(hevc_access_unit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME hevc_access_unit_test COMMAND hevc_access_unit_test)
