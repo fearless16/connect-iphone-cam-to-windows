@@ -904,6 +904,16 @@ static std::string discover_iphone_wifi_host() {
     return host;
 }
 
+static constexpr int kReconnectDelayMs = 250;    // after a session ends
+static constexpr int kNoDeviceRetryMs = 1'000;   // while no phone answers
+
+// Sleeps in 50 ms slices so a stop request is not delayed.
+static void sleep_unless_stopped(int totalMs) {
+    for (int waited = 0; waited < totalMs && !g_stopRequested.load(); waited += 50) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
 static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, bool directTcp,
                         bool wifiDiscover) {
     // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
@@ -930,13 +940,13 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
             closesocket(fd);
             if (g_stopRequested.load()) break;
-            fprintf(stderr, "WARN: stream ended; retrying in 1 second\n");
+            // The phone is usually still there (app relaunch, preset change,
+            // a timed-out frame): reconnect quickly so OBS freezes briefly.
+            fprintf(stderr, "WARN: stream ended; reconnecting in 250 ms\n");
+            sleep_unless_stopped(kReconnectDelayMs);
         } else {
             fprintf(stderr, "INFO: retrying iPhone connection in 1 second\n");
-        }
-        // One second in short slices so a stop request is not delayed.
-        for (int slice = 0; slice < 10 && !g_stopRequested.load(); ++slice) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            sleep_unless_stopped(kNoDeviceRetryMs);
         }
     }
     printf("INFO: stop requested; closing OBS relay\n");

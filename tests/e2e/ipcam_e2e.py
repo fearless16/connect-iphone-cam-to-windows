@@ -517,7 +517,7 @@ def midgop_check(ctx, summary):
 
 
 # disconnect: the phone closes after 2 s; the next session starts on an IDR.
-RECONNECT_GAP_LIMIT_S = 3.0
+RECONNECT_GAP_LIMIT_S = 1.5  # T1.8: 250 ms reconnect delay (3.0 with the old 1 s delay)
 
 
 def disconnect_session(ph, conn, k):
