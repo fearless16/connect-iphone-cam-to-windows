@@ -25,12 +25,14 @@ awk '
   }
 ' "$receiver"
 
-# Rebase into MPEG-TS's usual 90 kHz time base without unsigned subtraction.
-# A backwards source timestamp must advance by one 60fps frame instead of
-# producing a giant PTS value or a non-monotonic DTS.
+# Rescale into MPEG-TS's usual 90 kHz time base without unsigned subtraction.
+# An earlier or repeated arrival must still advance PTS instead of producing a
+# giant value or a non-monotonic DTS.
 [ $((16667 * 90000 / 1000000)) -eq 1500 ]
-grep -q 'RelayTimestampClock' "$receiver"
-grep -q 'timestamp_clock_.Rebase(timestampUs)' "$receiver"
+# G5: relay timeline follows PC arrival time
+grep -q 'ArrivalTimestampClock' "$receiver"
+grep -q 'arrival_clock_.Stamp(arrivalUs)' "$receiver"
+grep -q 'relay->Write(\*packet, arrivalUs, accessUnit)' "$receiver"
 grep -q "av_rescale_q(static_cast<int64_t>(relativeUs)" "$receiver"
 grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
 ! grep -q 'timestampUs - first_timestamp_us_' "$receiver"
@@ -39,7 +41,10 @@ grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
 # sessions. Reopening them per session resets both MPEG-TS continuity counters
 # and OBS-facing timestamps.
 grep -q 'static void receive_session(SOCKET fd, ObsUdpRelay\* relay)' "$receiver"
-grep -q 'if (relay) relay->BeginSession();' "$receiver"
+# G5: arrival time is one continuous PC clock, so nothing restarts the relay
+# timeline per phone session (the per-session BeginSession rebase is gone).
+! grep -q 'relay->BeginSession()' "$receiver"
+! grep -q 'arrival_clock_ = ' "$receiver"
 [ "$(grep -c 'ObsUdpRelay relay;' "$receiver")" -eq 1 ]
 grep -q 'receive_session(fd, obsUdpRelay ? &relay : nullptr)' "$receiver"
 

@@ -25,8 +25,8 @@ passed. Report it.
 |---|---|---|
 | R-ARCH-1 | `protocol/stream_protocol.h` owns the wire format. It stays dependency-free C (`<stdint.h>` only, `extern "C"`). Product code never includes `tests/`. **(observed)** | `architecture_boundary_contract.sh`, `protocol_selftest.cpp` |
 | R-ARCH-2 | `shared/StreamHeader.swift` is the only Swift mirror of the protocol. It is Foundation-only and must match the C header in magic, size, codec IDs, and byte layout. The TCP port (12345) must match between `StreamSender.port` and `DEVICE_PORT`. **(observed; enforcement proposed)** | `protocol_parity_contract.sh`, golden vector in `protocol_selftest.cpp` + `stream_header_test.swift` |
-| R-ARCH-3 | iOS layering: `AppDelegate` → `CameraViewController` → `CameraStreamer` → `StreamSender` → `StreamHeader`. The UI never references the transport. Only `StreamSender` frames packets. `StreamSender` imports only Foundation and Network. **(observed)** | `architecture_boundary_contract.sh` |
-| R-ARCH-4 | Pure logic lives in standalone units that compile without the app or SDKs: `ios/LengthPrefixedHEVC.swift` (Foundation/CoreMedia), `ios/QualityAdvisor.swift` (Foundation only), and `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h`, `wifi_discovery.h` (C++ standard headers only). New pure logic goes into a unit like these, with a runtime test. **(observed)** | `architecture_boundary_contract.sh`, runtime tests |
+| R-ARCH-3 | iOS layering: `AppDelegate` → `SceneDelegate` → `CameraViewController` → `CameraStreamer` → `StreamSender` → `StreamHeader`. The UI never references the transport. Only `StreamSender` frames packets. `StreamSender` imports only Foundation and Network. **(observed)** | `architecture_boundary_contract.sh` |
+| R-ARCH-4 | Pure logic lives in standalone units that compile without the app or SDKs: `ios/LengthPrefixedHEVC.swift` (Foundation/CoreMedia), `ios/QualityAdvisor.swift` and `ios/CrashReportStore.swift` (Foundation only), and `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h`, `wifi_discovery.h`, `crash_report.h` (C++ standard headers only). New pure logic goes into a unit like these, with a runtime test. **(observed)** | `architecture_boundary_contract.sh`, runtime tests |
 | R-ARCH-5 | The supported Windows product is `receiver.exe` (`receiver.cpp` + `gpu_frame_publisher.*`). It must not depend on archived prototype code. The sole exception is `mf_virtual_camera/gpu_frame_transport.h` (debt D1). **(observed)** | `architecture_boundary_contract.sh` |
 | R-ARCH-6 | Archived prototypes are not built by default, not run in CI, and not extended: `windows/virtual_camera.cpp`, `directshow_compat*.h`, `frame_store.h`, `iphonecamera.def`, `windows/mf_virtual_camera/`. **(observed)** | `architecture_boundary_contract.sh`, `windows_ci_contract.sh` |
 | R-ARCH-7 | `third_party/VCamSample/` is vendored reference material. Never edit it, and never reference it from a build. **(observed)** | `architecture_boundary_contract.sh` (references only; edits need review) |
@@ -65,8 +65,11 @@ Treat every byte from the network as untrusted.
 - Use `av_new_packet` (padding) for FFmpeg input.
 
 **R-ENG-TIME: Timestamps** (observed)
-Never subtract unsigned source timestamps directly. The relay timeline goes through
-`RelayTimestampClock`, and mux PTS stays strictly increasing.
+Never subtract unsigned source timestamps directly. The relay timeline follows PC
+arrival time through `ArrivalTimestampClock` (G5), never the phone clock, and is
+never reset between phone sessions; an idle gap advances it by at most 2 s
+(`kMaxGapUs`), so PTS grows with streamed time only. Mux PTS stays strictly increasing. The phone
+timestamp is diagnostics only (`StreamTimingStats` skew).
 
 **R-ENG-PERF: 4K60 hot path** (observed)
 Applies to per-frame paths:
@@ -93,6 +96,9 @@ Applies to per-frame paths:
 - Shell tests start with `#!/usr/bin/env sh` and `set -eu`, take file paths as arguments with
   defaults, and strip `\r` before parsing, because Windows checkouts are CRLF.
 - Never compile tests with `NDEBUG`.
+- End-to-end: `tests/receiver_e2e_test.sh` drives `tests/e2e/` (Python 3 stdlib
+  + ffmpeg CLI only; approved gate G1). It runs the real `receiver.exe` against a
+  fake iPhone, including fault scenarios and a memory/handle soak.
 
 **R-ENG-DOCS: User-facing docs** (observed)
 Update the user-facing docs in the same change when you change any of these:
@@ -105,6 +111,7 @@ The user-facing docs are `README.md`, `docs/QUICKSTART.md`, `OBS-SETUP.md`, `doc
 **R-ENG-DEPS: Dependencies** (observed)
 Runtime dependencies are system frameworks, FFmpeg, and libusbmuxd only. Adding any other
 dependency is a human-judgment decision.
+Test-only tooling: Python 3 stdlib and the ffmpeg/ffprobe CLIs (G1).
 
 **R-ENG-SEC: Network exposure** (proposed)
 Do not widen network exposure:
@@ -134,7 +141,7 @@ Do not copy these patterns. Fix them only when that is the task.
 | ID | Debt | Smallest correction |
 |---|---|---|
 | D1 | `windows/gpu_frame_publisher.h` includes `mf_virtual_camera/gpu_frame_transport.h`, so the supported code depends on the archived directory | Move the header to `windows/` and repoint both users (needs approval: it touches archived code) |
-| D2 | `ios/CameraStreamer.swift` (~1,250 lines) owns capture, encode, recovery, telemetry, health, and the watchdog | Add no new responsibilities. Extract pure logic into R-ARCH-4 units when touched |
+| D2 | `ios/CameraStreamer.swift` (~1,690 lines; it grew from ~1,250 with T5.2–T5.8 and T2.7) owns capture, encode, recovery, telemetry, health, the watchdog, presets and bit rate adaptation | Add no new responsibilities. Extract pure logic into R-ARCH-4 units when touched. The capability report already moved to `ios/CapabilityReport.swift`; `StreamPreset`/`OutputOrientation` are the next candidates |
 | D3 | The wire header has no version field | Human decision. A version needs a coordinated app + receiver release |
 | D4 | USB-only by default; Wi-Fi is opt-in (G7-A) and unauthenticated while on. The newest connection replaces the current one | Human decision. A pairing PIN (G7 option B) needs a protocol change |
 | D5 | ~~The sender accepted frames up to `UInt32.max`, but the receiver rejects anything over 16 MiB~~ | Fixed by T1.7: `StreamSender.send` guards `StreamHeader.maxFrameSize` and requests a keyframe |

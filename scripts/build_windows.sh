@@ -14,7 +14,7 @@ cl /std:c++20 /EHsc \
   /I"$FFMPEG_INC" /I"$USBMUXD_INC" /I"$PROTO_INC" \
   ../windows/receiver.cpp ../windows/gpu_frame_publisher.cpp \
   /link "$FFMPEG_LIB/avcodec.lib" "$FFMPEG_LIB/avformat.lib" "$FFMPEG_LIB/avutil.lib" \
-        "$USBMUXD_LIB/usbmuxd.lib" ws2_32.lib iphlpapi.lib d3d11.lib dxgi.lib mfplat.lib advapi32.lib \
+        "$USBMUXD_LIB/usbmuxd.lib" ws2_32.lib iphlpapi.lib dnsapi.lib d3d11.lib dxgi.lib mfplat.lib advapi32.lib \
   /OUT:receiver.exe
 
 echo "Built receiver.exe"

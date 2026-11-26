@@ -180,6 +180,56 @@ check(queueLatencies[0].isFinite && queueLatencies[0] >= 0 && queueLatencies[0] 
       "C9 implausible queue latency \(queueLatencies[0]) ms")
 close(c9)
 
+// C10 (review fix): the Wi-Fi switch rebuilds only the listener. A connected
+// non-Wi-Fi client (USB in the app, loopback here) keeps receiving video.
+var disconnects: [String] = []
+sender.onDisconnect = { disconnects.append($0) }
+guard let c10 = connectClient(deadline: 5) else { check(false, "C10 connect failed"); exit(1) }
+check(waitUntil(5) { connectedCount == expectedConnects + 4 }, "C10 onClientConnected")
+sender.send(frameNumber: 10_000, timestampUs: 1, codec: 0, isKeyframe: true, frame: payload("K", 1))
+check(readPacket(c10, timeout: 3)?.payload == payload("K", 1), "C10 initial keyframe")
+disconnects.removeAll()
+for (step, enabled) in [true, false].enumerated() {
+    sender.setWiFiEnabled(enabled)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    let seq = UInt8(10 + step)
+    sender.send(frameNumber: UInt32(10_001 + step), timestampUs: UInt64(2 + step), codec: 0,
+                isKeyframe: false, frame: payload("D", seq))
+    check(readPacket(c10, timeout: 3)?.payload == payload("D", seq),
+          "C10 Wi-Fi \(enabled ? "on" : "off") dropped the loopback client or re-armed the keyframe gate")
+}
+check(disconnects.isEmpty, "C10 Wi-Fi switch ended the connection: \(disconnects)")
+close(c10)
+
+// C11 (review fix): a stalled link still reports its drops and its queue wait
+// through onLinkStats (the sender's own 2 s timer), and dropped frames ask for
+// an IDR at most once per 0.5 s instead of once per drop.
+var linkStats: [StreamSender.LinkStats] = []
+sender.onLinkStats = { linkStats.append($0) }
+keyFrameRequests = 0
+guard let c11 = connectClient(deadline: 5) else { check(false, "C11 connect failed"); exit(1) }
+check(waitUntil(5) { connectedCount == expectedConnects + 5 }, "C11 onClientConnected")
+// Never read c11: the socket buffers fill and the send queue stalls. Every
+// frame is a keyframe, so each one passes the gate and overflows the queue.
+let stallStart = Date()
+var stallFrame: UInt32 = 0
+var sawStall = false
+while Date().timeIntervalSince(stallStart) < 9, !sawStall {
+    var f = big
+    f[0] = Character("K").asciiValue!
+    sender.send(frameNumber: 20_000 + stallFrame, timestampUs: UInt64(stallFrame), codec: 0, isKeyframe: true, frame: f)
+    stallFrame += 1
+    // ~12 MB/s offered: well past the loopback socket buffers within a few seconds.
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    sawStall = linkStats.contains { $0.drops > 0 && $0.maxQueueMs > 100 }
+}
+check(sawStall, "C11 onLinkStats never reported drops and a long queue wait on a stalled link: \(linkStats.map { ($0.drops, $0.maxQueueMs) })")
+let stallSeconds = Date().timeIntervalSince(stallStart)
+check(keyFrameRequests >= 1, "C11 no keyframe request on a stalled link")
+check(Double(keyFrameRequests) <= stallSeconds / 0.5 + 2,
+      "C11 \(keyFrameRequests) keyframe requests in \(stallSeconds) s; expected at most one per 0.5 s")
+close(c11)
+
 // C5: stop() refuses new connections.
 sender.stop()
 close(c2)

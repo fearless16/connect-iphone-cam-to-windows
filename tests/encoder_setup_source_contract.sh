@@ -27,10 +27,23 @@ grep -q 'recoveryScheduled' "$source"
 grep -q 'recoveryAttempt' "$source"
 grep -q 'appIsActive' "$source"
 grep -q 'handleSessionStopped' "$source"
-grep -q 'sender.restartListening' "$source"
+# Review fix (replaces "grep sender.restartListening"): since T5.5 the receiver
+# follows a new SPS size, so an orientation change is a media discontinuity
+# like a preset change (P1). It keeps the PC connection and waits for an IDR.
+set_orientation_body=$(tr -d '\r' < "$source" | awk '
+  /func setOutputOrientation\(/ { in_f = 1 }
+  in_f { print }
+  in_f && /^    }$/ { exit }
+')
+printf '%s\n' "$set_orientation_body" | grep -q 'invalidateEncoder(reason: nil)'
+printf '%s\n' "$set_orientation_body" | grep -q 'resetForDiscontinuity'
+if printf '%s\n' "$set_orientation_body" | grep -q 'restartListening'; then
+  echo "setOutputOrientation must not restart the listener" >&2
+  exit 1
+fi
 # T1.5: a healthy session is not rebuilt on foreground resume.
 grep -q 'session.isInterrupted' "$source"
-# T1.3: camera recovery keeps the PC connection (orientation still reconnects).
+# T1.3: camera recovery keeps the PC connection.
 recover_body=$(awk '
   /private func recoverSession\(reason:/ { in_r = 1 }
   /private func scheduleRecovery\(reason:/ { in_r = 0 }
@@ -157,8 +170,17 @@ fi
 # T5.4: the bit rate follows the transport the PC connected over.
 grep -q 'sender.onClientTransport' "$source"
 grep -q 'DataRateLimits, value: rateLimit' "$source"
-grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 120)' "$source"
+# G3: 1 s keyframe interval halves recovery/OBS join time
+grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 60)' "$source"
+grep -q 'MaxKeyFrameIntervalDuration, value: NSNumber(value: 1)' "$source"
+grep -q 'PrioritizeEncodingSpeedOverQuality' "$source"
 grep -q 'setIdleTimerDisabled(true)' "$source"
+# G4: encode only while a PC receiver is connected; the preview stays live,
+# and resuming forces an IDR.
+grep -q 'private var receiverWantsVideo = false' "$source"
+grep -q 'guard receiverWantsVideoNow() else { return }' "$source"
+grep -q 'setReceiverWantsVideo(state == .connected || state == .sending)' "$source"
+grep -q 'if changed && wanted { forceNextKeyFrame = true }' "$source"
 grep -q 'setIdleTimerDisabled(false)' "$source"
 grep -q 'isIdleTimerDisabled' "$source"
 grep -q 'thermalStateDidChangeNotification' "$source"

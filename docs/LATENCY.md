@@ -28,8 +28,10 @@ The video path is slower than a local microphone, so the audio needs a delay.
    latency in ms.
 3. Record a local clap test. Step through it frame by frame and adjust the
    offset until the clap sound and the image line up.
-4. Re-check after 30 minutes. If it drifted, report the receiver's `skewMs`
-   trend (see below). Drift is what triggers gate G5.
+4. Re-check after 30 minutes. It should not drift: the receiver stamps frames
+   for OBS with the PC clock (gate G5), so a phone clock that runs slightly
+   fast cannot add delay over a long stream. If it still drifts, report the
+   receiver's `skewMs` trend (see below) and the OBS version.
 
 ## Reading the numbers
 
@@ -51,11 +53,13 @@ Receiver console, `STAT:` line (printed every 120 frames):
 - **burst**: how many frames arrived less than 2 ms after the previous one
   since the previous line. A backlog draining shows up as a high count.
 - **skewMs**: the change in arrival-minus-source offset since the first frame of
-  the session. A slow steady climb means the two clocks drift apart or delay
-  never drains. The phone and PC clocks have unrelated origins, so only this
-  change is meaningful, never the absolute value.
-- **recv / sourcePTS**: frames per second measured on the PC clock and on the
-  phone's timestamps. They should both sit near 60.
+  the session. A slow steady climb means the two clocks drift apart. Since G5
+  the OBS timeline follows the PC clock, so this drift no longer reaches OBS;
+  the number stays as a diagnostic. The phone and PC clocks have unrelated
+  origins, so only this change is meaningful, never the absolute value.
+- **recv / sourcePTS**: frames per second since the previous `STAT` line,
+  measured on the PC clock and on the phone's timestamps. They should both sit
+  near 60.
 
 ## What these numbers do not cover
 

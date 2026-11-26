@@ -30,6 +30,7 @@ for name in $nested $archived; do
 done
 
 for path in "$tests_dir"/*; do
+  [ -d "$path" ] && continue  # helper dirs (tests/e2e) are driven by a top-level runner
   name=$(basename "$path")
   case "$name" in
     *.sh)
@@ -60,6 +61,11 @@ for path in "$tests_dir"/*; do
   grep -q "tests/$name" "$check" ||
     fail "tests/$name is not run by $check (local gate must mirror CI)"
 done
+
+if [ -d "$tests_dir/e2e" ]; then
+  grep -q 'e2e/ipcam_e2e.py' "$tests_dir/receiver_e2e_test.sh" ||
+    fail "tests/e2e is not driven by tests/receiver_e2e_test.sh"
+fi
 
 # Runtime C++ tests rely on assert(); NDEBUG would silently disable them.
 if grep -q 'NDEBUG' "$workflow" "$check"; then

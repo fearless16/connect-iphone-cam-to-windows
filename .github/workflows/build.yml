@@ -1,7 +1,7 @@
 name: Build iPhone USB receiver
 
 # Builds BOTH sides in the cloud. You never compile anything.
-#   - iOS: unsigned .ipa  -> install on phone via TrollStore (no Mac, no PC, no cert)
+#   - iOS: unsigned .ipa  -> sign with your own Apple ID and install (docs/BACKDOOR.md)
 #   - Windows: receiver.exe + runtime DLLs -> download, run on the PC
 # Trigger: push to main, any pull request, or run manually from the Actions tab.
 
@@ -24,7 +24,8 @@ jobs:
 
       - name: Select newest Xcode 26
         run: |
-          xc=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          # Newest stable Xcode 26: never a beta or release candidate.
+          xc=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -viE 'beta|_rc' | sort -V | tail -1 || true)
           if [ -n "$xc" ]; then sudo xcode-select -s "$xc"; fi
 
       - name: Require iOS 26 SDK
@@ -72,6 +73,16 @@ jobs:
             -o /tmp/quality_advisor_test
           /tmp/quality_advisor_test
 
+      - name: Test crash report store and framing
+        run: |
+          xcrun swiftc -swift-version 5 \
+            ios/CrashReportStore.swift \
+            tests/crash_report_store_test.swift \
+            -o /tmp/crash_report_store_test
+          /tmp/crash_report_store_test
+          sh tests/crash_report_source_contract.sh \
+            ios/CrashReportService.swift ios/CameraStreamer.swift windows/receiver.cpp
+
       - name: Test StreamSender over real sockets
         run: |
           # Top-level test code is only legal in a file named main.swift.
@@ -112,7 +123,7 @@ jobs:
             ios/StreamSender.swift \
             ios/CameraViewController.swift
 
-      - name: Package unsigned IPA (TrollStore-ready)
+      - name: Package unsigned IPA (sign it with your Apple ID, docs/BACKDOOR.md)
         run: |
           APP="$GITHUB_WORKSPACE/ios/build/Release-iphoneos/iPhoneCameraStream.app"
           test -d "$APP"
@@ -151,6 +162,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-libusbmuxd
+            mingw-w64-ucrt-x86_64-python
             git
             make
 
@@ -204,16 +216,32 @@ jobs:
             -o wifi_discovery_test.exe
           ./wifi_discovery_test.exe
           g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/crash_report_test.cpp" \
+            -o crash_report_test.exe
+          ./crash_report_test.exe
+          g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
             "${{ github.workspace }}/windows/gpu_frame_publisher.cpp" \
             -o receiver.exe \
-            $(pkg-config --libs libavcodec libavformat libavutil libswscale) \
+            $(pkg-config --libs libavcodec libavformat libavutil) \
             $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ldnsapi -ld3d11 -ldxgi -lmfplat -ladvapi32
           ls -lh receiver.exe
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/
-          ldd receiver.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
+          # The toolchain is UCRT64, so the runtime DLLs live in /ucrt64/bin.
+          # Without them the downloaded receiver.exe cannot start on a clean PC.
+          dll_prefix="${MSYSTEM_PREFIX:-/ucrt64}/bin/"
+          ldd receiver.exe | awk -v prefix="$dll_prefix" 'index($3, prefix) == 1 { print $3 }' | sort -u | xargs -r -I{} cp "{}" windows-binaries/
+          dll_count=$(ls windows-binaries/*.dll 2>/dev/null | wc -l)
+          [ "$dll_count" -gt 0 ] || { echo "no runtime DLLs were copied next to receiver.exe"; exit 1; }
+          ls -lh windows-binaries/
+
+      - name: Receiver end-to-end tests (fake iPhone -> receiver.exe -> UDP sink)
+        run: |
+          cd "${{ github.workspace }}"
+          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart crash_report drift soak"
 
       - uses: actions/upload-artifact@v7
         with:

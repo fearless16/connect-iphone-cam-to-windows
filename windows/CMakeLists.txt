@@ -26,6 +26,10 @@ if(BUILD_TESTING)
     target_include_directories(wifi_discovery_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME wifi_discovery_test COMMAND wifi_discovery_test)
 
+    add_executable(crash_report_test ../tests/crash_report_test.cpp)
+    target_include_directories(crash_report_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME crash_report_test COMMAND crash_report_test)
+
     add_executable(hevc_access_unit_test ../tests/hevc_access_unit_test.cpp)
     target_include_directories(hevc_access_unit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME hevc_access_unit_test COMMAND hevc_access_unit_test)
@@ -51,12 +55,13 @@ endif()
 
 set(PROTO_INC ${CMAKE_CURRENT_SOURCE_DIR}/../protocol)
 
-# ============ Receiver (debug / latency measurement) ============
+# ============ Receiver (supported OBS relay) ============
+# CI builds with MSYS2 g++ (.github/workflows/build.yml); this target is an
+# alternative and must link the same system libraries.
 add_executable(receiver receiver.cpp gpu_frame_publisher.cpp)
 target_include_directories(receiver PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
     ${USBMUXD_INCLUDE_DIR}
-    ${BASECLASSES_DIR}
     ${PROTO_INC})
 target_link_libraries(receiver PRIVATE
     ${FFMPEG_LIBRARIES}
@@ -66,6 +71,7 @@ target_link_libraries(receiver PRIVATE
     mfplat
     advapi32
     iphlpapi
+    dnsapi
     ws2_32)
 
 # The old DirectShow source is retained for research only. It requires the

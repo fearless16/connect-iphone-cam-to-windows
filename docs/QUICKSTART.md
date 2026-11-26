@@ -42,7 +42,9 @@ So install Apple Devices and keep Personal Hotspot as a backup, not the first ch
    pacman -S --needed mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-libusbmuxd mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-pkgconf git
    ```
 3. From the repo root run `sh scripts/build_receiver_msys2.sh`. It runs the C++
-   tests and writes `build/windows-binaries/receiver.exe` plus its DLLs.
+   tests and writes `build/windows-binaries/receiver.exe` plus its DLLs, so the
+   folder also runs outside the MSYS2 shell. The **MINGW64** shell works too if
+   you installed the `mingw-w64-x86_64-*` packages instead.
 
 ### Option 2: Visual Studio and vcpkg
 
@@ -87,6 +89,10 @@ So install Apple Devices and keep Personal Hotspot as a backup, not the first ch
 ## PART C — Run
 
 - Phone must be plugged into the Windows PC via USB, with the app open in the foreground (the screen stays awake by design).
+- The phone encodes video only while `receiver.exe` is connected. Until then the
+  preview stays live, the status shows `HEVC paused` and the HEVC rate is 0, which
+  keeps the phone cooler. Video starts on a keyframe within about a second of the
+  receiver connecting.
 - Start the OBS Media Source before `receiver.exe`; relay-write errors are
   counted as `relayDrop` and do not end the iPhone connection.
 
@@ -106,12 +112,27 @@ cable is not practical.
    finds nothing (some routers block multicast), run `receiver.exe --host <ip>`
    with the address from step 2.
 
+Flipping the switch does not interrupt a USB stream that is already running;
+turning it off ends only a Wi-Fi connection.
+
 Expect more latency and jitter than USB. While the switch is on, the stream is
 unauthenticated and visible to every device on that network. Turn the switch off
 when you finish: the phone then refuses Wi-Fi and cellular connections again and
 only the USB path works.
 
 ---
+
+## Crash reports (automatic)
+
+If the app crashes, iOS (MetricKit) hands the app a crash report the next time it
+launches. The app keeps only that newest report (at most 256 KB, one small file)
+and offers it to the PC once, over USB or Wi-Fi, on a separate port (12347) that
+is open only while a report is waiting. When `receiver.exe` connects, it saves
+the report to a `crash-reports` folder next to `receiver.exe` and prints
+`iPhone crash report saved to ...`. Only then does the phone delete its copy.
+Send that file when asking for help debugging a crash. With Wi-Fi mode off, the
+report can only travel over USB. iOS can take a while to deliver a report, and
+may not deliver one at all if analytics sharing is off in iPhone Settings.
 
 ## Troubleshooting (first things to check)
 
@@ -127,6 +148,8 @@ only the USB path works.
 | Find the phone on Wi-Fi without typing its address | Run `receiver.exe --wifi` (Wi-Fi mode must be on in the app). `--host` wins if both are given. |
 | Connect to a specific phone address (Wi-Fi or tests) | Run `receiver.exe --host <ip>`. It connects straight to `<ip>:12345` and skips usbmux. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
+| Several iPhones/iPads plugged in, receiver picks the wrong one | The receiver lists every USB device's `udid` once. Set `IPHONE_CAMERA_UDID=<udid>` before starting it. |
+| `avformat-*.dll was not found` when starting receiver.exe | Keep every DLL from the `windows-binaries` folder next to `receiver.exe`. CI builds before this fix shipped the exe alone; download a newer artifact. |
 | OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
 | Video froze after clicking the receiver window | Fixed in this receiver build (QuickEdit is disabled). On old builds, press Esc in the console. |
 | Black frame in OBS | Transport not yet flowing; check the receiver console / phone is streaming. |

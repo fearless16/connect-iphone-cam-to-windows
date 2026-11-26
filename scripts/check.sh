@@ -43,6 +43,7 @@ run "iOS preview" sh tests/ios_preview_source_contract.sh \
   ios/AppDelegate.swift ios/CameraViewController.swift \
   ios/iPhoneCameraStream.xcodeproj/project.pbxproj
 run "stream sender" sh tests/stream_sender_source_contract.sh ios/StreamSender.swift
+run "crash report" sh tests/crash_report_source_contract.sh ios/CrashReportService.swift ios/CameraStreamer.swift windows/receiver.cpp
 run "encoder setup" sh tests/encoder_setup_source_contract.sh ios/CameraStreamer.swift
 run "HEVC join" sh tests/hevc_join_source_contract.sh ios/CameraStreamer.swift ios/StreamSender.swift
 run "orientation/timestamp" sh tests/camera_orientation_timestamp_contract.sh \
@@ -92,6 +93,7 @@ cpp_test tests/hevc_access_unit_test.cpp windows
 cpp_test tests/hevc_sps_test.cpp windows
 cpp_test tests/stream_timing_test.cpp windows
 cpp_test tests/wifi_discovery_test.cpp windows
+cpp_test tests/crash_report_test.cpp windows
 
 echo "== Swift runtime tests"
 swift_test() { # TEST_SOURCE PRODUCT_SOURCE [extra swiftc flags...]
@@ -114,7 +116,22 @@ swift_test tests/length_prefixed_hevc_test.swift ios/LengthPrefixedHEVC.swift
 swift_test tests/cmblockbuffer_hevc_test.swift ios/LengthPrefixedHEVC.swift -framework CoreMedia
 swift_test tests/stream_header_test.swift shared/StreamHeader.swift
 swift_test tests/quality_advisor_test.swift ios/QualityAdvisor.swift
+swift_test tests/crash_report_store_test.swift ios/CrashReportStore.swift
 swift_test tests/stream_sender_test.swift ios/StreamSender.swift shared/StreamHeader.swift
+
+echo "== End-to-end (receiver.exe)"
+# Fake iPhone -> real receiver.exe -> UDP sink (tests/e2e, gate G1). Build the
+# receiver first: sh scripts/build_receiver_msys2.sh
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    exe="${RECEIVER_EXE:-build/windows-binaries/receiver.exe}"
+    if [ -f "$exe" ]; then
+      run "receiver e2e" sh tests/receiver_e2e_test.sh "$exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart crash_report drift soak"
+    else
+      skip "tests/receiver_e2e_test.sh" "receiver.exe not built (sh scripts/build_receiver_msys2.sh)"
+    fi ;;
+  *) skip "tests/receiver_e2e_test.sh" "needs Windows (CI windows job runs it)" ;;
+esac
 
 echo "== CI-only builds"
 skip "receiver.exe link" "needs MSYS2 FFmpeg + libusbmuxd (CI windows job)"

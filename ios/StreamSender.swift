@@ -16,6 +16,10 @@ final class StreamSender {
     static let port: UInt16 = 12345
     // T3.3: Bonjour service type; must match NSBonjourServices in Info.plist.
     static let bonjourType = "_ipcamstream._tcp"
+    // A fixed ASCII instance name. The default (the device name) usually holds a
+    // curly apostrophe, which the receiver's validator rejects as non-ASCII.
+    // Bonjour appends " (2)" itself if two phones advertise at once.
+    static let bonjourName = "iPhoneCameraStream"
 
     private var listener: NWListener?
     private var connection: NWConnection?
@@ -31,6 +35,11 @@ final class StreamSender {
         var rttVarMs: Double
         /// Retransmitted bytes / sent bytes over the window, 0 if nothing was sent.
         var retransmitRatio: Double
+        /// Frames dropped on queue overflow during the window.
+        var drops: UInt64
+        /// Longest wait (ms) of any packet during the window, including a packet
+        /// still queued or in flight, so a stalled link is visible.
+        var maxQueueMs: Double
     }
     /// Every 2 s while a PC is connected (T5.8). Called on the sender queue.
     var onLinkStats: ((LinkStats) -> Void)?
@@ -78,6 +87,19 @@ final class StreamSender {
     private var linkTimer: DispatchSourceTimer?
     private var pendingTransferReport: NWConnection.PendingDataTransferReport?
     private var pendingTransferConnection: NWConnection?
+    // Link-window counters for onLinkStats. They are read by the 2 s timer, not
+    // by the send completion, so a link that sends nothing still reports its
+    // drops and its queue wait. Confined to `queue`.
+    private var linkWindowDrops: UInt64 = 0
+    private var linkWindowMaxQueueMs = 0.0
+    private var inFlightEnqueuedAt: TimeInterval?
+    // Every drop asks for an IDR, but at most once per interval: on a weak link
+    // a keyframe per drop would make the congestion worse. Confined to `queue`.
+    private static let keyFrameRequestInterval: TimeInterval = 0.5
+    private var lastKeyFrameRequestUptime: TimeInterval = -.infinity
+    private var keyFrameRequestDeferred = false
+    // Name of the Wi-Fi interface as the path monitor reports it (never hardcoded).
+    private var wifiInterfaceName: String?
 
     init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -122,6 +144,10 @@ final class StreamSender {
     /// next one, so a report always covers one full interval of one connection.
     private func collectLinkStats() {
         dispatchPrecondition(condition: .onQueue(queue))
+        // Close this window's counters now, whether or not a report follows.
+        let drops = linkWindowDrops
+        let maxQueueMs = currentWindowMaxQueueMs()
+        resetLinkWindow()
         guard let conn = connection, connectionReady else {
             pendingTransferReport = nil
             pendingTransferConnection = nil
@@ -140,42 +166,105 @@ final class StreamSender {
             self.onLinkStats?(LinkStats(
                 rttMs: path.transportSmoothedRTT * 1000,
                 rttVarMs: path.transportRTTVariance * 1000,
-                retransmitRatio: sent > 0 ? Double(path.retransmittedTransportByteCount) / sent : 0))
+                retransmitRatio: sent > 0 ? Double(path.retransmittedTransportByteCount) / sent : 0,
+                drops: drops,
+                maxQueueMs: maxQueueMs))
         }
     }
 
-    /// Opt in to (or out of) Wi-Fi connections. Rebinds the listener on a change,
-    /// because the allowed interfaces are fixed when the listener is created.
+    /// The window's longest packet wait, counting the packet in flight and the
+    /// oldest queued packet as waiting until now.
+    private func currentWindowMaxQueueMs() -> Double {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let now = ProcessInfo.processInfo.systemUptime
+        var longest = linkWindowMaxQueueMs
+        if let inFlightEnqueuedAt { longest = max(longest, (now - inFlightEnqueuedAt) * 1000.0) }
+        if let oldest = pendingPackets.first { longest = max(longest, (now - oldest.enqueuedAt) * 1000.0) }
+        return longest
+    }
+
+    private func resetLinkWindow() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        linkWindowDrops = 0
+        linkWindowMaxQueueMs = 0
+    }
+
+    /// Asks the encoder for an IDR at most once per `keyFrameRequestInterval`.
+    /// A request inside the interval is deferred, not lost, and is skipped if a
+    /// keyframe was admitted meanwhile.
+    private func requestKeyFrame() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let now = ProcessInfo.processInfo.systemUptime
+        let wait = lastKeyFrameRequestUptime + Self.keyFrameRequestInterval - now
+        guard wait > 0 else {
+            lastKeyFrameRequestUptime = now
+            onKeyFrameNeeded?()
+            return
+        }
+        guard !keyFrameRequestDeferred else { return }
+        keyFrameRequestDeferred = true
+        queue.asyncAfter(deadline: .now() + wait) { [weak self] in
+            guard let self else { return }
+            self.keyFrameRequestDeferred = false
+            guard self.waitingForKeyFrame else { return }
+            self.lastKeyFrameRequestUptime = ProcessInfo.processInfo.systemUptime
+            self.onKeyFrameNeeded?()
+        }
+    }
+
+    /// Opt in to (or out of) Wi-Fi connections. Only the listener is rebuilt,
+    /// because the allowed interfaces are fixed when it is created. An accepted
+    /// connection does not depend on its listener, so a USB connection keeps
+    /// streaming; a Wi-Fi client is closed only when Wi-Fi is turned off.
     func setWiFiEnabled(_ enabled: Bool) {
         queue.async { [weak self] in
             guard let self, self.wifiEnabled != enabled else { return }
             self.wifiEnabled = enabled
-            self.restartListening(reason: enabled ? "Wi-Fi streaming enabled" : "Wi-Fi streaming disabled")
+            if !enabled, let conn = self.connection, conn.currentPath?.usesInterfaceType(.wifi) == true {
+                self.noteDisconnect("Wi-Fi streaming disabled")
+                self.dropConnection()
+                self.publishConnectionState(.waiting)
+            }
+            self.rebuildListener(reason: enabled ? "Wi-Fi streaming enabled" : "Wi-Fi streaming disabled")
             self.publishWiFiAddress()
         }
     }
 
-    /// Rebind after foreground recovery or a USB interface transition. Calling
-    /// `start()` alone is intentionally idempotent and cannot repair a
-    /// listener that Network.framework still considers ready on a stale path.
+    /// Rebind after a USB interface transition. Calling `start()` alone is
+    /// intentionally idempotent and cannot repair a listener that
+    /// Network.framework still considers ready on a stale path.
     func restartListening(reason: String) {
         queue.async { [weak self] in
             guard let self, self.desiredRunning else { return }
             self.noteDisconnect("listener restart: \(reason)")
-            self.connection?.cancel()
-            self.connection = nil
-            self.connectionReady = false
-            self.sendInFlight = false
-            self.pendingPackets.removeAll(keepingCapacity: true)
-            let oldListener = self.listener
-            self.listenerReady = false
-            self.listener = nil
-            oldListener?.cancel()
-            self.listenerRetryAttempt = 0
+            self.dropConnection()
             self.publishConnectionState(.waiting)
-            self.report(reason)
-            self.startOnQueue()
+            self.rebuildListener(reason: reason)
         }
+    }
+
+    /// Cancels the current PC connection and clears its send state.
+    private func dropConnection() {
+        dispatchPrecondition(condition: .onQueue(queue))
+        connection?.cancel()
+        connection = nil
+        connectionReady = false
+        sendInFlight = false
+        inFlightEnqueuedAt = nil
+        pendingPackets.removeAll(keepingCapacity: true)
+    }
+
+    /// Replaces the listener and leaves any accepted connection alone.
+    private func rebuildListener(reason: String) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        guard desiredRunning else { return }
+        let oldListener = listener
+        listenerReady = false
+        listener = nil
+        oldListener?.cancel()
+        listenerRetryAttempt = 0
+        report(reason)
+        startOnQueue()
     }
 
     /// Media discontinuity (camera or encoder rebuilt) without a transport fault.
@@ -192,6 +281,7 @@ final class StreamSender {
 
     private func handlePathUpdate(_ path: NWPath) {
         dispatchPrecondition(condition: .onQueue(queue))
+        wifiInterfaceName = path.availableInterfaces.first(where: { $0.type == .wifi })?.name
         publishWiFiAddress()
         let wiredInterfaces = path.availableInterfaces
             .filter { $0.type == .wiredEthernet }
@@ -211,20 +301,17 @@ final class StreamSender {
         // A ready listener is bound to the wildcard address and keeps accepting on
         // interfaces that appear later. Never drop a working PC connection because
         // Wi-Fi or cellular changed; only rebuild a listener that is not ready.
-        guard !listenerReady else {
-            print("SENDER: network path changed; listener still ready")
-            return
-        }
+        guard !listenerReady else { return }
         restartListening(reason: "USB network path changed • rebinding listener")
     }
 
     private func publishWiFiAddress() {
         dispatchPrecondition(condition: .onQueue(queue))
-        onWiFiAddress?(wifiEnabled ? Self.wifiIPv4Address() : nil)
+        onWiFiAddress?(wifiEnabled ? wifiInterfaceName.flatMap(Self.ipv4Address(ofInterface:)) : nil)
     }
 
-    /// IPv4 address of `en0` (Wi-Fi on iPhone), or nil when it has none.
-    private static func wifiIPv4Address() -> String? {
+    /// IPv4 address of the named interface, or nil when it has none.
+    private static func ipv4Address(ofInterface name: String) -> String? {
         var list: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&list) == 0, let first = list else { return nil }
         defer { freeifaddrs(list) }
@@ -233,7 +320,7 @@ final class StreamSender {
             cursor = entry.pointee.ifa_next
             guard let address = entry.pointee.ifa_addr,
                   address.pointee.sa_family == UInt8(AF_INET),
-                  String(cString: entry.pointee.ifa_name) == "en0" else { continue }
+                  String(cString: entry.pointee.ifa_name) == name else { continue }
             let capacity = Int(INET_ADDRSTRLEN)
             var host = [CChar](repeating: 0, count: capacity)
             address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { socketAddress in
@@ -263,7 +350,7 @@ final class StreamSender {
         do {
             newListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
         } catch {
-            print("ERROR: NWListener \(error)")
+            report("USB listener could not be created: \(error)")
             publishConnectionState(.failed)
             scheduleRestart()
             return
@@ -271,7 +358,7 @@ final class StreamSender {
         // T3.3: announce over Bonjour only while Wi-Fi mode is on. The listener is
         // rebuilt on every Wi-Fi switch change, so the advertisement follows it.
         if wifiEnabled {
-            newListener.service = NWListener.Service(name: nil, type: StreamSender.bonjourType)
+            newListener.service = NWListener.Service(name: StreamSender.bonjourName, type: StreamSender.bonjourType)
         }
         listenerReady = false
         listener = newListener
@@ -282,11 +369,12 @@ final class StreamSender {
                 guard self.listener === newListener else { return }
                 self.listenerReady = true
                 self.listenerRetryAttempt = 0
-                self.publishConnectionState(.waiting)
+                // A rebuilt listener (Wi-Fi switch) must not mark a live PC connection as waiting.
+                if self.connection == nil { self.publishConnectionState(.waiting) }
                 self.publishWiFiAddress()
                 self.report("USB stream service ready")
             case .waiting(let error):
-                self.publishConnectionState(.waiting)
+                if self.connection == nil { self.publishConnectionState(.waiting) }
                 self.report("USB listener waiting: \(Self.describe(error))")
             case .failed(let error):
                 guard self.listener === newListener else { return }
@@ -294,11 +382,7 @@ final class StreamSender {
                 self.publishConnectionState(.failed)
                 self.report("USB listener failed: \(Self.describe(error))")
                 self.noteDisconnect("listener failed: \(Self.describe(error))")
-                self.connection?.cancel()
-                self.connection = nil
-                self.connectionReady = false
-                self.sendInFlight = false
-                self.pendingPackets.removeAll(keepingCapacity: true)
+                self.dropConnection()
                 self.listener = nil
                 newListener.cancel()
                 self.scheduleRestart()
@@ -320,6 +404,7 @@ final class StreamSender {
             self.connection = conn
             self.connectionReady = false
             self.sendInFlight = false
+            self.inFlightEnqueuedAt = nil
             self.pendingPackets.removeAll(keepingCapacity: true)
             self.waitingForKeyFrame = true
             self.publishConnectionState(.waiting)
@@ -327,50 +412,52 @@ final class StreamSender {
             self.droppedFrameCount = 0
             self.sentFrameStart = ProcessInfo.processInfo.systemUptime
             self.windowMaxQueueLatencyMs = 0
+            self.resetLinkWindow()
+            // conn.start(queue:) below delivers every state change on `queue` already.
             conn.stateUpdateHandler = { [weak self, weak conn] state in
-                self?.queue.async {
-                    guard let self, let conn, self.connection === conn else { return }
-                    switch state {
-                    case .ready:
-                        self.connectionReady = true
-                        self.waitingForKeyFrame = true
-                        self.sentFrameCount = 0
-                        self.droppedFrameCount = 0
-                        self.sentFrameStart = ProcessInfo.processInfo.systemUptime
-                        self.windowMaxQueueLatencyMs = 0
-                        self.publishConnectionState(.connected)
-                        self.onClientTransport?(conn.currentPath?.usesInterfaceType(.wifi) ?? false)
-                        self.onClientConnected?()
-                        self.report("PC connected • starting video")
-                    case .waiting(let error):
-                        self.pauseForConnectionWaiting()
-                        self.report("PC connection waiting: \(Self.describe(error))")
-                    case .failed(let error):
-                        self.noteDisconnect("connection failed: \(Self.describe(error))")
-                        self.connectionReady = false
-                        self.connection = nil
-                        self.sendInFlight = false
-                        self.pendingPackets.removeAll(keepingCapacity: true)
-                        self.publishConnectionState(.failed)
-                        self.report("PC connection failed: \(Self.describe(error))")
-                        conn.cancel()
-                    case .cancelled:
-                        self.noteDisconnect("PC connection closed")
-                        self.connectionReady = false
-                        self.connection = nil
-                        self.sendInFlight = false
-                        self.pendingPackets.removeAll(keepingCapacity: true)
-                        self.publishConnectionState(.disconnected)
-                        self.report("PC connection closed")
-                    default:
-                        break
-                    }
+                guard let self, let conn, self.connection === conn else { return }
+                switch state {
+                case .ready:
+                    self.connectionReady = true
+                    self.waitingForKeyFrame = true
+                    self.sentFrameCount = 0
+                    self.droppedFrameCount = 0
+                    self.sentFrameStart = ProcessInfo.processInfo.systemUptime
+                    self.windowMaxQueueLatencyMs = 0
+                    self.resetLinkWindow()
+                    self.publishConnectionState(.connected)
+                    self.onClientTransport?(conn.currentPath?.usesInterfaceType(.wifi) ?? false)
+                    self.onClientConnected?()
+                    self.report("PC connected • starting video")
+                case .waiting(let error):
+                    self.pauseForConnectionWaiting()
+                    self.report("PC connection waiting: \(Self.describe(error))")
+                case .failed(let error):
+                    self.noteDisconnect("connection failed: \(Self.describe(error))")
+                    self.connectionReady = false
+                    self.connection = nil
+                    self.sendInFlight = false
+                    self.inFlightEnqueuedAt = nil
+                    self.pendingPackets.removeAll(keepingCapacity: true)
+                    self.publishConnectionState(.failed)
+                    self.report("PC connection failed: \(Self.describe(error))")
+                    conn.cancel()
+                case .cancelled:
+                    self.noteDisconnect("PC connection closed")
+                    self.connectionReady = false
+                    self.connection = nil
+                    self.sendInFlight = false
+                    self.inFlightEnqueuedAt = nil
+                    self.pendingPackets.removeAll(keepingCapacity: true)
+                    self.publishConnectionState(.disconnected)
+                    self.report("PC connection closed")
+                default:
+                    break
                 }
             }
             conn.start(queue: self.queue)
         }
         newListener.start(queue: queue)
-        print("SENDER: listening on port \(StreamSender.port)")
     }
 
     private func scheduleRestart() {
@@ -387,23 +474,13 @@ final class StreamSender {
     /// Send a complete protocol packet (header + Annex-B frame).
     func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, isKeyframe: Bool, frame: Data) {
         guard frame.count <= StreamHeader.maxFrameSize else {
-            print("ERROR: encoded frame \(frame.count) bytes exceeds protocol limit")
+            report("Encoded frame of \(frame.count) bytes exceeds the protocol limit • requesting keyframe")
             queue.async { [weak self] in
                 self?.waitingForKeyFrame = true
-                self?.onKeyFrameNeeded?()
+                self?.requestKeyFrame()
             }
             return
         }
-        let header = StreamHeader(
-            magic: StreamHeader.magic,
-            frameNumber: frameNumber,
-            timestampUs: timestampUs,
-            codec: codec,
-            frameSize: UInt32(frame.count)
-        ).encode()
-        var packet = Data(capacity: header.count + frame.count)
-        packet.append(header)
-        packet.append(frame)
 
         queue.async { [weak self] in
             guard let self, let conn = self.connection,
@@ -411,12 +488,25 @@ final class StreamSender {
             guard !self.waitingForKeyFrame || isKeyframe else { return }
             guard self.pendingPackets.count < self.maxQueuedPackets else {
                 self.droppedFrameCount &+= 1
+                self.linkWindowDrops &+= 1
                 // A dropped frame breaks the reference chain. Stop admitting deltas
                 // and ask for an IDR instead of streaming corrupt video for up to 2 s.
                 self.waitingForKeyFrame = true
-                self.onKeyFrameNeeded?()
+                self.requestKeyFrame()
                 return
             }
+            // Build the packet only for a frame that will be sent: no copy of a
+            // 4K frame while no PC is connected or the keyframe gate is closed.
+            let header = StreamHeader(
+                magic: StreamHeader.magic,
+                frameNumber: frameNumber,
+                timestampUs: timestampUs,
+                codec: codec,
+                frameSize: UInt32(frame.count)
+            ).encode()
+            var packet = Data(capacity: header.count + frame.count)
+            packet.append(header)
+            packet.append(frame)
             self.pendingPackets.append((data: packet, enqueuedAt: ProcessInfo.processInfo.systemUptime))
             // Do not admit delta frames until this IDR was actually retained.
             if isKeyframe { self.waitingForKeyFrame = false }
@@ -454,8 +544,9 @@ final class StreamSender {
         }
     }
 
+    /// Status text for CameraStreamer, which logs it through os.Logger and shows
+    /// it. StreamSender itself imports only Foundation and Network (R-ARCH-3).
     private func report(_ message: String) {
-        print("SENDER: \(message)")
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
         }
@@ -490,48 +581,50 @@ final class StreamSender {
         let packet = next.data
         let enqueuedAt = next.enqueuedAt
         sendInFlight = true
+        inFlightEnqueuedAt = enqueuedAt
         let generation = sendGeneration
+        // The connection was started on `queue`, so its completions run there.
         connection.send(content: packet, completion: .contentProcessed { [weak self, weak connection] error in
-            self?.queue.async {
-                guard let self, let connection, self.connection === connection else { return }
-                self.sendInFlight = false
-                guard generation == self.sendGeneration else {
-                    // This completion belongs to the pre-wait transport state,
-                    // including any error it carries. Resume only with the
-                    // queued fresh IDR on the current connection generation.
-                    self.pumpSend(connection: connection)
-                    return
-                }
-                if let error {
-                    self.report("Video send failed: \(Self.describe(error))")
-                    self.noteDisconnect("send error: \(Self.describe(error))")
-                    self.connectionReady = false
-                    self.connection = nil
-                    self.pendingPackets.removeAll(keepingCapacity: true)
-                    self.publishConnectionState(.failed)
-                    connection.cancel()
-                    return
-                }
-                self.sentFrameCount &+= 1
-                let sentAt = ProcessInfo.processInfo.systemUptime
-                self.windowMaxQueueLatencyMs = max(self.windowMaxQueueLatencyMs,
-                                                   (sentAt - enqueuedAt) * 1000.0)
-                if self.sentFrameCount == 1 {
-                    self.publishConnectionState(.sending)
-                    self.onFrameSent?(sentAt)
-                    self.report("First video frame sent")
-                }
-                if self.sentFrameCount % 30 == 0 {
-                    self.onFrameSent?(sentAt)
-                }
-                if self.sentFrameCount % 60 == 0 {
-                    let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - self.sentFrameStart)
-                    self.onFrameRate?(Double(self.sentFrameCount) / elapsed, self.droppedFrameCount)
-                    self.onQueueLatency?(self.windowMaxQueueLatencyMs)
-                    self.windowMaxQueueLatencyMs = 0
-                }
+            guard let self, let connection, self.connection === connection else { return }
+            self.sendInFlight = false
+            self.inFlightEnqueuedAt = nil
+            guard generation == self.sendGeneration else {
+                // This completion belongs to the pre-wait transport state,
+                // including any error it carries. Resume only with the
+                // queued fresh IDR on the current connection generation.
                 self.pumpSend(connection: connection)
+                return
             }
+            if let error {
+                self.report("Video send failed: \(Self.describe(error))")
+                self.noteDisconnect("send error: \(Self.describe(error))")
+                self.connectionReady = false
+                self.connection = nil
+                self.pendingPackets.removeAll(keepingCapacity: true)
+                self.publishConnectionState(.failed)
+                connection.cancel()
+                return
+            }
+            self.sentFrameCount &+= 1
+            let sentAt = ProcessInfo.processInfo.systemUptime
+            let waitedMs = (sentAt - enqueuedAt) * 1000.0
+            self.windowMaxQueueLatencyMs = max(self.windowMaxQueueLatencyMs, waitedMs)
+            self.linkWindowMaxQueueMs = max(self.linkWindowMaxQueueMs, waitedMs)
+            if self.sentFrameCount == 1 {
+                self.publishConnectionState(.sending)
+                self.onFrameSent?(sentAt)
+                self.report("First video frame sent")
+            }
+            if self.sentFrameCount % 30 == 0 {
+                self.onFrameSent?(sentAt)
+            }
+            if self.sentFrameCount % 60 == 0 {
+                let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - self.sentFrameStart)
+                self.onFrameRate?(Double(self.sentFrameCount) / elapsed, self.droppedFrameCount)
+                self.onQueueLatency?(self.windowMaxQueueLatencyMs)
+                self.windowMaxQueueLatencyMs = 0
+            }
+            self.pumpSend(connection: connection)
         })
     }
 }

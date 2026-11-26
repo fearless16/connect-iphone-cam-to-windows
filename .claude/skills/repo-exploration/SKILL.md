@@ -31,7 +31,7 @@ its callers, the pattern to reuse, and every test or contract that pins it.
    - `Grep 'tests/<file>' .github/workflows/build.yml scripts/check.sh` shows where a test runs.
 5. **Check cross-side impact.** The iPhone and Windows sides share state through these channels:
    - Header fields, magic, size, codec, and port: `protocol/` + `shared/` + both senders and receivers
-   - Timestamps: `CameraStreamer.nextProtocolTimestampUs` ↔ `RelayTimestampClock`
+   - Timestamps: `CameraStreamer.nextProtocolTimestampUs` (diagnostics) ↔ `ArrivalTimestampClock` (relay PTS, G5)
    - Keyframe/join semantics: `StreamSender.waitingForKeyFrame` ↔ `waitingForRandomAccess` /
      `RelayRecoveryGate`
    - Orientation/dimensions: `camera_orientation_timestamp_contract.sh` reads both sides

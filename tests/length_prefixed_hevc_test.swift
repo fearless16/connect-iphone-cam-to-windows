@@ -51,6 +51,17 @@ struct LengthPrefixedHEVCTests {
         precondition(!LengthPrefixedHEVC.containsIDR(
             Data([0, 0, 0, 1, 0x02, 0x01])),
             "non-IDR NAL must not be admitted as keyframe")
+        // Parameter sets (VPS 32, SPS 33, PPS 34) before the IDR slice are skipped.
+        precondition(LengthPrefixedHEVC.containsIDR(
+            Data([0, 0, 0, 1, 0x40, 0x01, 0, 0, 0, 1, 0x42, 0x01,
+                  0, 0, 0, 1, 0x44, 0x01, 0, 0, 1, 0x26, 0x01, 0xaa])),
+            "IDR after VPS/SPS/PPS must be found")
+        // The first slice decides: bytes that look like an IDR header inside a
+        // later NAL of a delta picture do not make it a keyframe.
+        precondition(!LengthPrefixedHEVC.containsIDR(
+            Data([0, 0, 0, 1, 0x02, 0x01, 0xaa, 0, 0, 1, 0x26, 0x01])),
+            "the first VCL NAL (a delta slice) must decide")
+        precondition(!LengthPrefixedHEVC.containsIDR(Data()), "empty data is not a keyframe")
 
         expectFailure(.zeroLengthNAL(offset: 0),
                       [0, 0, 0, 0],

@@ -3,17 +3,16 @@ import UIKit
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
 
-    private let streamer = CameraStreamer()
-    var window: UIWindow?
+    /// One camera pipeline for the app's lifetime. SceneDelegate shows it in
+    /// the window; a scene that reconnects attaches to the same pipeline.
+    let streamer = CameraStreamer()
 
     func application(_ application: UIApplication,
-                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        let cameraViewController = CameraViewController(streamer: streamer)
-        let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = cameraViewController
-        window.makeKeyAndVisible()
-        self.window = window
-        return true
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: "Default", sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
