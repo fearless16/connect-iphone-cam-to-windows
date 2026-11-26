@@ -704,7 +704,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             ("rate limit", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_DataRateLimits, value: rateLimit)),
             ("frame rate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: currentPreset().frameRate))),
             // G3: a keyframe every second halves the worst-case recovery and
-            // OBS join time. The duration cap also holds for 30 fps presets.
+            // OBS join time. The duration cap keeps it at 1 s at any frame rate.
             ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 60))),
             ("keyframe duration", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1))),
         ]

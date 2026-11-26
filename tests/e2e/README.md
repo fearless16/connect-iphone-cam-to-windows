@@ -35,6 +35,7 @@ Each run prints `E2E_SUMMARY {json}` and `E2E PASS|FAIL <scenario>`, and keeps
 | `garbage` | a header with a bad magic | `invalid stream header`; session dropped; next session relays |
 | `oversize` | a header with `frame_size` = 16 MiB + 1 | session dropped without reading a payload; next session relays |
 | `burst` | 300 ms pause, then 18 queued frames at once | every frame relayed; PTS never behind arrival, and back within 5 ms of its pre-pause offset (G5) |
+| `obs_restart` | (the sink closes UDP 12346 for 2 s mid-stream, like OBS restarting) | the phone session survives; relaying resumes and a keyframe reaches OBS within 1.2 s |
 | `drift` | phone clock runs 1% fast for 20 s | relay PTS stays on the PC clock (G5): moves at most 15 ms against arrival |
 | `soak` | repeated sessions (`--duration`, `--session-seconds`) | every session relays; CC continuous; receiver private bytes and handle count stay flat |
 

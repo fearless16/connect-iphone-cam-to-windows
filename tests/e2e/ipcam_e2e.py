@@ -231,30 +231,47 @@ class UdpSink:
     take(), so a long soak keeps no backlog in memory."""
 
     def __init__(self, rcvbuf=16 * 1024 * 1024):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
-        try:
-            self.sock.bind(("127.0.0.1", OBS_PORT))
-        except OSError as error:
-            raise ScenarioFailure("UDP sink could not bind 127.0.0.1:%d (is OBS or another "
-                                  "receiver test running?): %s" % (OBS_PORT, error))
-        self.sock.settimeout(0.2)
+        self.rcvbuf = rcvbuf
+        self.sock = self._bind()
         self.queue = collections.deque()  # (arrival_ns, bytes); deque is thread-safe
         self.count = 0
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
+    def _bind(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.rcvbuf)
+        try:
+            sock.bind(("127.0.0.1", OBS_PORT))
+        except OSError as error:
+            sock.close()
+            raise ScenarioFailure("UDP sink could not bind 127.0.0.1:%d (is OBS or another "
+                                  "receiver test running?): %s" % (OBS_PORT, error))
+        sock.settimeout(0.2)
+        return sock
+
     def start(self):
         self.thread.start()
 
+    def outage(self, seconds):
+        """Close the port like a restarting OBS, then listen again."""
+        old, self.sock = self.sock, None
+        old.close()
+        time.sleep(seconds)
+        self.sock = self._bind()
+
     def _run(self):
         while not self.stop_event.is_set():
+            sock = self.sock
+            if sock is None:
+                time.sleep(0.01)
+                continue
             try:
-                data = self.sock.recv(65536)
+                data = sock.recv(65536)
             except socket.timeout:
                 continue
             except OSError:
-                return
+                continue  # closed by outage() or stop(); the loop head decides
             self.queue.append((time.monotonic_ns(), data))
             self.count += 1
 
@@ -268,7 +285,8 @@ class UdpSink:
     def stop(self):
         self.stop_event.set()
         self.thread.join(5)
-        self.sock.close()
+        if self.sock:
+            self.sock.close()
 
 
 # --------------------------------------------------------------------------
@@ -718,6 +736,37 @@ def burst_check(ctx, summary):
               "offset moved %.1f ms" % drift)
 
 
+# obs_restart: OBS goes away for 2 s mid-stream (its UDP port closes) and comes
+# back. The phone session must not notice, and OBS must get a keyframe soon.
+OBS_OUTAGE_S = 2.0
+
+
+def obs_restart_session(ph, conn, k):
+    index = ph.stream(conn, k, start=0, seconds=2.0)
+    ph.event("obs_down", k)
+    outage = threading.Thread(target=ph.sink.outage, args=(OBS_OUTAGE_S,), daemon=True)
+    outage.start()
+    index = ph.stream(conn, k, start=index, seconds=OBS_OUTAGE_S)
+    outage.join(5)
+    ph.event("obs_up", k)
+    ph.stream(conn, k, start=index)
+
+
+def obs_restart_check(ctx, summary):
+    common_checks(ctx, summary)
+    phone, pes = ctx["phone"], ctx["ts"]["pes"]
+    check(len(phone.events_named("accept")) == 1, "the phone session survives an OBS restart")
+    up = phone.events_named("obs_up")
+    check(up, "OBS came back")
+    after = [p for p in pes if p.arrival_ns > up[0][1]]
+    check(after, "relay reaches the restarted OBS")
+    join = next((p for p in after if is_join(p.nal_types())), None)
+    check(join is not None, "a keyframe reaches the restarted OBS")
+    wait = (join.arrival_ns - up[0][1]) / 1e9
+    summary["keyframe_after_restart_s"] = round(wait, 3)
+    check(wait <= 1.2, "keyframe within 1.2 s of the OBS restart (1 s keyframe interval)", "%.3f s" % wait)
+
+
 # drift: the phone clock runs 1% fast (real crystals differ by ~20-50 ppm, which
 # is 0.07-0.18 s per hour; 1% makes an hour of drift visible in 20 s). OBS
 # schedules frames by PTS, so a PTS timeline that outruns the PC clock is
@@ -785,6 +834,7 @@ SCENARIOS = {  # name: (seconds or None for --duration, session factory, checks[
     "garbage": (4.0, lambda a: invalid_header_session(False), invalid_header_check),
     "oversize": (4.0, lambda a: invalid_header_session(True), invalid_header_check),
     "burst": (4.0, lambda a: burst_session, burst_check),
+    "obs_restart": (7.0, lambda a: obs_restart_session, obs_restart_check),
     "drift": (20.0, lambda a: drift_session, drift_check, DRIFT_CLOCK_RATE),
     "soak": (None, lambda a: soak_session_fn(a.session_seconds), soak_check),
 }
@@ -799,9 +849,10 @@ def run(args):
     workdir = args.workdir or tempfile.mkdtemp(prefix="ipcam_e2e_%s_" % args.scenario)
     os.makedirs(workdir, exist_ok=True)
     print("E2E %s: workdir %s" % (args.scenario, workdir), flush=True)
-    sink = UdpSink()
+    sink = UdpSink(args.sink_rcvbuf)
     analyzer = TsAnalyzer(os.path.join(workdir, "capture.ts"))
     phone = FakePhone(units, make_session(args), clock_rate)
+    phone.sink = sink
     receiver = None
     memory = []
     try:
@@ -835,6 +886,7 @@ def run(args):
     ctx = {"alive": alive, "receiver": receiver, "phone": phone, "workdir": workdir,
            "ts": analyzer.result(), "log": receiver.text(), "memory": memory}
     summary = {"scenario": args.scenario, "seconds": duration, "datagrams": sink.count,
+               "sink_rcvbuf": args.sink_rcvbuf,
                "clean_stop": receiver.clean_stop}
     try:
         verify(ctx, summary)
@@ -855,6 +907,8 @@ def main():
     parser.add_argument("--workdir", help="keep logs and capture.ts here (default: a temp dir)")
     parser.add_argument("--fixture", default=FIXTURE,
                         help="Annex-B HEVC file with AUDs and closed GOPs (see README); default the 360p fixture")
+    parser.add_argument("--sink-rcvbuf", type=int, default=16 * 1024 * 1024,
+                        help="UDP receive buffer of the OBS stand-in in bytes (OBS Network Buffering)")
     parser.add_argument("--duration", type=float, default=45.0, help="soak: total seconds")
     parser.add_argument("--session-seconds", type=float, default=15.0, help="soak: seconds per phone session")
     args = parser.parse_args()

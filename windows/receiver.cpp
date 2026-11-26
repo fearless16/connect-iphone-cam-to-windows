@@ -196,7 +196,7 @@ public:
             ? candidatePts : std::max(candidatePts, last_mux_pts_ + 1);
         packet->dts = packet->pts;
         last_mux_pts_ = packet->pts;
-        packet->duration = av_rescale_q(static_cast<int64_t>(RelayTimestampClock::kFrameDurationUs),
+        packet->duration = av_rescale_q(static_cast<int64_t>(kNominalFrameDurationUs),
                                         AVRational{1, 1'000'000}, muxer_time_base_);
         if (accessUnit.hasIdr) packet->flags |= AV_PKT_FLAG_KEY;
         const int status = av_interleaved_write_frame(context_, packet);
@@ -641,8 +641,11 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     uint64_t frames = 0, decoded = 0;
     uint64_t skippedUntilRandomAccess = 0, relayWriteFailures = 0, relayGateDrops = 0;
     bool waitingForRandomAccess = true;
-    uint64_t firstTimestampUs = 0, previousTimestampUs = 0, sourceGapFrames = 0;
-    auto t0 = std::chrono::steady_clock::now();
+    uint64_t previousTimestampUs = 0, sourceGapFrames = 0;
+    // STAT rates cover the frames since the previous STAT line, so a problem
+    // in hour three of a long stream is not averaged away.
+    auto windowStart = std::chrono::steady_clock::now();
+    uint64_t windowStartFrame = 0, windowStartSourceUs = 0;
     printf("INFO: waiting for first HEVC frame from iPhone\n");
 
     while (true) {
@@ -695,12 +698,14 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         if (frames == 0) {
             printf("INFO: first HEVC packet=%u bytes frame=%u\n",
                    h.frame_size, h.frame_number);
-            firstTimestampUs = h.timestamp_us;
+            windowStart = std::chrono::steady_clock::now();
+            windowStartFrame = 1;
+            windowStartSourceUs = h.timestamp_us;
         } else if (h.timestamp_us > previousTimestampUs) {
             const uint64_t deltaUs = h.timestamp_us - previousTimestampUs;
             // A 60 fps source should advance by about 16.7 ms. Count only
             // significant gaps so this remains useful if the encoder jitters.
-            constexpr uint64_t kFrameUs = RelayTimestampClock::kFrameDurationUs;
+            constexpr uint64_t kFrameUs = kNominalFrameDurationUs;
             if (deltaUs > kFrameUs * 3 / 2) {
                 sourceGapFrames += (deltaUs + kFrameUs / 2) / kFrameUs - 1;
             }
@@ -737,15 +742,16 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
         av_packet_unref(packet);
 
         if (frames % 120 == 0) {
-            auto now = std::chrono::steady_clock::now();
-            double s = std::chrono::duration<double>(now - t0).count();
-            const double sourceSeconds = previousTimestampUs > firstTimestampUs
-                ? static_cast<double>(previousTimestampUs - firstTimestampUs) / 1'000'000.0 : 0.0;
-            const double sourceFps = sourceSeconds > 0
-                ? static_cast<double>(frames - 1) / sourceSeconds : 0.0;
+            const auto now = std::chrono::steady_clock::now();
+            const double windowSeconds = std::chrono::duration<double>(now - windowStart).count();
+            const double windowIntervals = static_cast<double>(frames - windowStartFrame);
+            const double recvFps = windowSeconds > 0 ? windowIntervals / windowSeconds : 0.0;
+            const double sourceSeconds = previousTimestampUs > windowStartSourceUs
+                ? static_cast<double>(previousTimestampUs - windowStartSourceUs) / 1'000'000.0 : 0.0;
+            const double sourceFps = sourceSeconds > 0 ? windowIntervals / sourceSeconds : 0.0;
             printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu relayGateDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu "
                    "extraDelayMs=%.1f maxExtraMs=%.1f maxGapMs=%.1f burst=%u skewMs=%.1f mode=%s frames\n",
-                   frames / s, sourceFps,
+                   recvFps, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
                    static_cast<unsigned long long>(relayWriteFailures),
                    static_cast<unsigned long long>(relayGateDrops),
@@ -760,6 +766,9 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
                    timing.SkewUs() / 1000.0,
                    obsUdpRelay ? "OBS_UDP_HEVC" : "GPU_RING");
             timing.ResetWindow();
+            windowStart = now;
+            windowStartFrame = frames;
+            windowStartSourceUs = previousTimestampUs;
         }
     }
 
@@ -934,7 +943,12 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
         }
         const SOCKET fd = connect_to_device(target.c_str(), directTcp || wifiDiscover);
         if (fd != INVALID_SOCKET) {
+            // Keep Windows from sleeping while a phone streams: OBS blocks
+            // sleep only while it records or streams, not while it previews.
+            // The display may still turn off.
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
+            SetThreadExecutionState(ES_CONTINUOUS);
             closesocket(fd);
             if (g_stopRequested.load()) break;
             // The phone is usually still there (app relaunch, preset change,

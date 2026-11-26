@@ -4,6 +4,13 @@ set -eu
 sender="$1"
 
 grep -q 'connectionReady' "$sender"
+# Sender diagnostics go through os.Logger: print() never reaches Console.app
+# or `log stream` on a release build.
+grep -q 'private static let log = Logger(' "$sender"
+if grep -qE '(^|[^.A-Za-z_])print\(' "$sender"; then
+  echo "StreamSender must log through os.Logger, not print()" >&2
+  exit 1
+fi
 grep -q 'stateUpdateHandler' "$sender"
 grep -q 'PC connected' "$sender"
 grep -q 'First video frame sent' "$sender"

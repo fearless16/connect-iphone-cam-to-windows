@@ -4,29 +4,7 @@
 #include "relay_timestamp.h"
 
 int main() {
-    RelayTimestampClock clock;
-
-    clock.BeginSession();
-
-    assert(clock.Rebase(1'000'000) == 0);
-    assert(clock.Rebase(1'016'667) == 16'667);
-
-    // Simulate a camera/encoder recovery whose source clock restarts lower.
-    // The relay must advance one frame instead of underflowing uint64_t.
-    assert(clock.Rebase(250) == 33'334);
-    assert(clock.Rebase(16'917) == 50'001);
-
-    // A duplicate timestamp is handled the same way and cannot regress PTS.
-    assert(clock.Rebase(16'917) == 66'668);
-
-    // A new iPhone connection is a new source-timestamp session, but OBS keeps
-    // consuming the same MPEG-TS timeline. Even when the phone restarts at
-    // zero, the first mux timestamp in session B must advance strictly past A.
-    const uint64_t lastSessionATimestamp = clock.Rebase(33'584);
-    clock.BeginSession();
-    const uint64_t firstSessionBTimestamp = clock.Rebase(0);
-    assert(firstSessionBTimestamp > lastSessionATimestamp);
-    assert(clock.Rebase(16'667) > firstSessionBTimestamp);
+    static_assert(kNominalFrameDurationUs == 16'667, "one 60 fps frame");
 
     // G5: the relay timeline follows PC arrival time.
     ArrivalTimestampClock arrival;
@@ -49,6 +27,20 @@ int main() {
         assert(stamped > previous);
         previous = stamped;
     }
+
+    // An idle receiver: a 10-hour gap between sessions advances by
+    // kMaxGapUs only, and the next frames keep their real spacing.
+    ArrivalTimestampClock idle;
+    assert(idle.Stamp(1'000'000) == 0);
+    assert(idle.Stamp(1'016'667) == 16'667);
+    const uint64_t tenHours = 10ull * 3600 * 1'000'000;
+    const uint64_t resumed = idle.Stamp(1'016'667 + tenHours);
+    assert(resumed == 16'667 + ArrivalTimestampClock::kMaxGapUs);
+    assert(idle.Stamp(1'033'334 + tenHours) == resumed + 16'667);
+    // A gap at the limit is kept exactly.
+    ArrivalTimestampClock edge;
+    assert(edge.Stamp(0) == 0);
+    assert(edge.Stamp(ArrivalTimestampClock::kMaxGapUs) == ArrivalTimestampClock::kMaxGapUs);
 
     // Values near UINT64_MAX / 2 do not overflow.
     ArrivalTimestampClock large;

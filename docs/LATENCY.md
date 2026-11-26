@@ -57,8 +57,9 @@ Receiver console, `STAT:` line (printed every 120 frames):
   the OBS timeline follows the PC clock, so this drift no longer reaches OBS;
   the number stays as a diagnostic. The phone and PC clocks have unrelated
   origins, so only this change is meaningful, never the absolute value.
-- **recv / sourcePTS**: frames per second measured on the PC clock and on the
-  phone's timestamps. They should both sit near 60.
+- **recv / sourcePTS**: frames per second since the previous `STAT` line,
+  measured on the PC clock and on the phone's timestamps. They should both sit
+  near 60.
 
 ## What these numbers do not cover
 

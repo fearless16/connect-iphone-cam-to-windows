@@ -22,6 +22,10 @@ grep -q 'select(0' "$receiver"
 grep -q 'waiting for first HEVC frame' "$receiver"
 grep -q 'first HEVC packet' "$receiver"
 grep -q 'sourcePTS' "$receiver"
+# Long streams: STAT rates are per window (not session averages), and Windows
+# must not sleep while a phone session is active.
+grep -q 'windowIntervals / windowSeconds' "$receiver"
+grep -q 'SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)' "$receiver"
 grep -q 'sourceGapFrames' "$receiver"
 grep -q 'av_new_packet' "$receiver"
 grep -q 'AV_INPUT_BUFFER_PADDING_SIZE' "$receiver"

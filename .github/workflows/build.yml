@@ -226,7 +226,7 @@ jobs:
       - name: Receiver end-to-end tests (fake iPhone -> receiver.exe -> UDP sink)
         run: |
           cd "${{ github.workspace }}"
-          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst drift soak"
+          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart drift soak"
 
       - uses: actions/upload-artifact@v7
         with:

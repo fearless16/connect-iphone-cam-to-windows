@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import os
 
 enum StreamSenderConnectionState: Equatable {
     case waiting
@@ -13,6 +14,9 @@ enum StreamSenderConnectionState: Equatable {
 /// so the Windows receiver connects via usbmuxd_connect(device_id, PORT).
 final class StreamSender {
 
+    // os.Logger reaches Console.app and `log stream` on release builds; print does not.
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "iPhoneCameraStream",
+                                    category: "sender")
     static let port: UInt16 = 12345
     // T3.3: Bonjour service type; must match NSBonjourServices in Info.plist.
     static let bonjourType = "_ipcamstream._tcp"
@@ -302,7 +306,7 @@ final class StreamSender {
         // interfaces that appear later. Never drop a working PC connection because
         // Wi-Fi or cellular changed; only rebuild a listener that is not ready.
         guard !listenerReady else {
-            print("SENDER: network path changed; listener still ready")
+            Self.log.debug("network path changed; listener still ready")
             return
         }
         restartListening(reason: "USB network path changed • rebinding listener")
@@ -353,7 +357,7 @@ final class StreamSender {
         do {
             newListener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: StreamSender.port))
         } catch {
-            print("ERROR: NWListener \(error)")
+            Self.log.error("NWListener: \(String(describing: error), privacy: .public)")
             publishConnectionState(.failed)
             scheduleRestart()
             return
@@ -461,7 +465,7 @@ final class StreamSender {
             conn.start(queue: self.queue)
         }
         newListener.start(queue: queue)
-        print("SENDER: listening on port \(StreamSender.port)")
+        Self.log.notice("listening on port \(StreamSender.port)")
     }
 
     private func scheduleRestart() {
@@ -478,7 +482,7 @@ final class StreamSender {
     /// Send a complete protocol packet (header + Annex-B frame).
     func send(frameNumber: UInt32, timestampUs: UInt64, codec: UInt8, isKeyframe: Bool, frame: Data) {
         guard frame.count <= StreamHeader.maxFrameSize else {
-            print("ERROR: encoded frame \(frame.count) bytes exceeds protocol limit")
+            Self.log.error("encoded frame \(frame.count) bytes exceeds protocol limit")
             queue.async { [weak self] in
                 self?.waitingForKeyFrame = true
                 self?.requestKeyFrame()
@@ -549,7 +553,7 @@ final class StreamSender {
     }
 
     private func report(_ message: String) {
-        print("SENDER: \(message)")
+        Self.log.notice("\(message, privacy: .public)")
         DispatchQueue.main.async { [weak self] in
             self?.onStatus?(message)
         }

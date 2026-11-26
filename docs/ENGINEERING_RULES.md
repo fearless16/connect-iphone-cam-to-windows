@@ -67,7 +67,8 @@ Treat every byte from the network as untrusted.
 **R-ENG-TIME: Timestamps** (observed)
 Never subtract unsigned source timestamps directly. The relay timeline follows PC
 arrival time through `ArrivalTimestampClock` (G5), never the phone clock, and is
-never reset between phone sessions. Mux PTS stays strictly increasing. The phone
+never reset between phone sessions; an idle gap advances it by at most 2 s
+(`kMaxGapUs`), so PTS grows with streamed time only. Mux PTS stays strictly increasing. The phone
 timestamp is diagnostics only (`StreamTimingStats` skew).
 
 **R-ENG-PERF: 4K60 hot path** (observed)
@@ -140,7 +141,7 @@ Do not copy these patterns. Fix them only when that is the task.
 | ID | Debt | Smallest correction |
 |---|---|---|
 | D1 | `windows/gpu_frame_publisher.h` includes `mf_virtual_camera/gpu_frame_transport.h`, so the supported code depends on the archived directory | Move the header to `windows/` and repoint both users (needs approval: it touches archived code) |
-| D2 | `ios/CameraStreamer.swift` (~1,650 lines; it grew from ~1,250 with T5.2–T5.8) owns capture, encode, recovery, telemetry, health, the watchdog, presets and bit rate adaptation | Add no new responsibilities. Extract pure logic into R-ARCH-4 units when touched. The capability report already moved to `ios/CapabilityReport.swift`; `StreamPreset`/`OutputOrientation` are the next candidates |
+| D2 | `ios/CameraStreamer.swift` (~1,690 lines; it grew from ~1,250 with T5.2–T5.8 and T2.7) owns capture, encode, recovery, telemetry, health, the watchdog, presets and bit rate adaptation | Add no new responsibilities. Extract pure logic into R-ARCH-4 units when touched. The capability report already moved to `ios/CapabilityReport.swift`; `StreamPreset`/`OutputOrientation` are the next candidates |
 | D3 | The wire header has no version field | Human decision. A version needs a coordinated app + receiver release |
 | D4 | USB-only by default; Wi-Fi is opt-in (G7-A) and unauthenticated while on. The newest connection replaces the current one | Human decision. A pairing PIN (G7 option B) needs a protocol change |
 | D5 | ~~The sender accepted frames up to `UInt32.max`, but the receiver rejects anything over 16 MiB~~ | Fixed by T1.7: `StreamSender.send` guards `StreamHeader.maxFrameSize` and requests a keyframe |
