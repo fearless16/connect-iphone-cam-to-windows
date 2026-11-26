@@ -119,7 +119,7 @@ Docs-only or question-only tasks don't need the full workflow. Still cite eviden
 ## Working efficiently
 
 - Read this file, then only the skill for the current step. Don't preload all skills.
-- `CameraStreamer.swift` (~1,690 lines) and `receiver.cpp` (~1,075 lines) are large. Grep for the
+- `CameraStreamer.swift` (~1,690 lines) and `receiver.cpp` (~1,180 lines) are large. Grep for the
   symbol, then read a bounded range. Don't read them whole.
 - Skip `third_party/`, `assets/`, `*.xcassets`, `project.pbxproj` (unless you are adding files to Xcode), and archived code.
 - Reuse context you already gathered. Don't re-read files you just edited.

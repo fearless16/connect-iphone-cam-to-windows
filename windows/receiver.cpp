@@ -6,6 +6,8 @@
 // Build: scripts/build_receiver_msys2.sh (mirrors the CI windows job).
 
 #include <cstdio>
+#include <cstdarg>
+#include <io.h>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -56,6 +58,27 @@ static std::atomic<bool> g_stopRequested{false};
 // as that handler returns.
 static HANDLE g_stoppedEvent = nullptr;
 static constexpr DWORD kCloseWaitMs = 4'000;
+
+// Every log line is one write. Redirected to a file, this CRT writes unbuffered
+// stdout and stderr a byte at a time, so a line from the crash-report thread
+// would otherwise land inside a main-thread line and garble both.
+#ifdef __MINGW_PRINTF_FORMAT
+__attribute__((format(__MINGW_PRINTF_FORMAT, 2, 3)))
+#endif
+static void log_line(FILE* stream, const char* format, ...) {
+    char line[2048];
+    va_list args;
+    va_start(args, format);
+    const int length = std::vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    if (length <= 0) return;
+    size_t size = static_cast<size_t>(length);
+    if (size >= sizeof(line)) {  // truncated: keep the line break
+        size = sizeof(line) - 1;
+        line[size - 1] = '\n';
+    }
+    _write(_fileno(stream), line, static_cast<unsigned>(size));
+}
 
 struct DecodeTelemetry {
     bool d3d11_requested = false;
@@ -133,7 +156,7 @@ public:
         }
         header_written_ = true;
         muxer_time_base_ = stream_->time_base;
-        printf("INFO: OBS relay ready; Media Source input=%s format=mpegts tb=%d/%d\n",
+        log_line(stdout, "INFO: OBS relay ready; Media Source input=%s format=mpegts tb=%d/%d\n",
                kUrl, muxer_time_base_.num, muxer_time_base_.den);
         return true;
     }
@@ -153,7 +176,7 @@ public:
                 (w != width_ || h != height_)) {
                 width_ = w;
                 height_ = h;
-                printf("INFO: stream size %dx%d\n", w, h);
+                log_line(stdout, "INFO: stream size %dx%d\n", w, h);
                 if (!Open(true)) {
                     // Retry on the next join point through the recovery gate,
                     // which reopens with the size recorded above.
@@ -205,7 +228,7 @@ public:
         if (status >= 0) {
             recovery_gate_.OnWriteSuccess();
             if (reopenedForThisWrite) {
-                printf("INFO: OBS relay recovered on fresh HEVC decoder-join AU\n");
+                log_line(stdout, "INFO: OBS relay recovered on fresh HEVC decoder-join AU\n");
             }
             return RelayWriteResult::Written;
         }
@@ -213,7 +236,7 @@ public:
             next_reopen_attempt_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         }
         if (recovery_gate_.OnWriteFailure()) {
-            fprintf(stderr,
+            log_line(stderr,
                     "WARN: OBS relay write failed %u consecutive times; "
                     "waiting for HEVC decoder-join AU to reopen\n",
                     RelayRecoveryGate::kConsecutiveFailureThreshold);
@@ -240,7 +263,7 @@ private:
     bool Report(const char* operation, int status) {
         char text[AV_ERROR_MAX_STRING_SIZE]{};
         av_strerror(status, text, sizeof(text));
-        fprintf(stderr, "ERROR: OBS relay %s failed: %s (%d)\n", operation, text, status);
+        log_line(stderr, "ERROR: OBS relay %s failed: %s (%d)\n", operation, text, status);
         return false;
     }
 
@@ -276,7 +299,7 @@ static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* f
     for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
         if (*format == AV_PIX_FMT_D3D11) return *format;
     }
-    fprintf(stderr, "WARN: HEVC decoder did not offer D3D11 output; using software decode\n");
+    log_line(stderr, "WARN: HEVC decoder did not offer D3D11 output; using software decode\n");
     return formats[0];
 }
 
@@ -333,7 +356,7 @@ static bool bind_iphone_usb_interface(SOCKET socket, const char* host) {
             if (::bind(socket, reinterpret_cast<const sockaddr*>(local), sizeof(*local)) == 0) {
                 char address[INET_ADDRSTRLEN]{};
                 InetNtopA(AF_INET, &local->sin_addr, address, sizeof(address));
-                printf("INFO: bound iPhone USB network source=%s\n", address);
+                log_line(stdout, "INFO: bound iPhone USB network source=%s\n", address);
                 return true;
             }
             return false;
@@ -408,9 +431,9 @@ static SOCKET connect_tcp(const char* host, bool requireUsbInterface, unsigned p
     freeaddrinfo(results);
     if (socket != INVALID_SOCKET) {
         if (requireUsbInterface) {
-            printf("INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
+            log_line(stdout, "INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
         } else {
-            printf("INFO: connected to iPhone at %s:%u (direct TCP)\n", host, DEVICE_PORT);
+            log_line(stdout, "INFO: connected to iPhone at %s:%u (direct TCP)\n", host, DEVICE_PORT);
         }
     }
     return socket;
@@ -438,7 +461,7 @@ static SOCKET connect_to_device(const char* host, bool directTcp) {
         if (*host == '\0') return INVALID_SOCKET;  // Wi-Fi discovery found nothing
         const SOCKET direct = connect_tcp(host, false);
         if (direct == INVALID_SOCKET) {
-            fprintf(stderr, "WARN: direct TCP connect to %s:%u failed\n", host, DEVICE_PORT);
+            log_line(stderr, "WARN: direct TCP connect to %s:%u failed\n", host, DEVICE_PORT);
         }
         return direct;
     }
@@ -463,29 +486,29 @@ static SOCKET connect_to_device(const char* host, bool directTcp) {
         listedDevices = true;
         for (int index = 0; index < count; ++index) {
             if (list[index].conn_type == CONNECTION_TYPE_USB) {
-                printf("INFO: USB Apple device udid=%s\n", list[index].udid);
+                log_line(stdout, "INFO: USB Apple device udid=%s\n", list[index].udid);
             }
         }
-        printf("INFO: %d Apple devices on USB; using the first. Set IPHONE_CAMERA_UDID to choose.\n",
+        log_line(stdout, "INFO: %d Apple devices on USB; using the first. Set IPHONE_CAMERA_UDID to choose.\n",
                usbDeviceCount);
     }
     static bool warnedMissingUdid = false;  // once, not on every 1 s retry
     if (wantedUdid && usbDevice == nullptr && usbDeviceCount > 0 && !warnedMissingUdid) {
         warnedMissingUdid = true;
-        fprintf(stderr, "WARN: no USB device with IPHONE_CAMERA_UDID=%s\n", wantedUdid);
+        log_line(stderr, "WARN: no USB device with IPHONE_CAMERA_UDID=%s\n", wantedUdid);
     }
     if (usbDevice != nullptr) {
         const int device_handle = static_cast<int>(usbDevice->handle);
-        printf("INFO: device_handle=%d udid=%s\n", device_handle, usbDevice->udid);
+        log_line(stdout, "INFO: device_handle=%d udid=%s\n", device_handle, usbDevice->udid);
         int fd = usbmuxd_connect(device_handle, DEVICE_PORT);
         if (list != nullptr) usbmuxd_device_list_free(&list);
         if (fd >= 0) {
-            printf("INFO: connected fd=%d\n", fd);
+            log_line(stdout, "INFO: connected fd=%d\n", fd);
             // libusbmuxd exposes a legacy int descriptor. Preserve the full-width
             // SOCKET type for all Winsock calls after this compatibility boundary.
             return static_cast<SOCKET>(fd);
         }
-        fprintf(stderr, "WARN: usbmuxd_connect failed; trying USB network fallback\n");
+        log_line(stderr, "WARN: usbmuxd_connect failed; trying USB network fallback\n");
     } else if (list != nullptr) {
         usbmuxd_device_list_free(&list);
     }
@@ -494,7 +517,7 @@ static SOCKET connect_to_device(const char* host, bool directTcp) {
     // enumerated the device yet.
     const SOCKET tcpSocket = connect_tcp(host, true);
     if (tcpSocket != INVALID_SOCKET) return tcpSocket;
-    fprintf(stderr, "ERROR: no iPhone USB transport available (AMDS/usbmux or USB network)\n");
+    log_line(stderr, "ERROR: no iPhone USB transport available (AMDS/usbmux or USB network)\n");
     return INVALID_SOCKET;
 }
 
@@ -518,7 +541,7 @@ static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part, long
         FD_SET(fd, &readable);
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            fprintf(stderr, "WARN: timed out waiting for %s\n", part);
+            log_line(stderr, "WARN: timed out waiting for %s\n", part);
             return false;
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
@@ -530,7 +553,7 @@ static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part, long
         if (ready == 0) continue;  // slice elapsed; the loop head enforces the deadline
 
         if (ready < 0) {
-            fprintf(stderr, "ERROR: select %s failed: WSA=%d\n", part, WSAGetLastError());
+            log_line(stderr, "ERROR: select %s failed: WSA=%d\n", part, WSAGetLastError());
             return false;
         }
         int r = recv(fd, reinterpret_cast<char *>(buf + got),
@@ -543,9 +566,9 @@ static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part, long
                 continue;
             }
             if (r == 0) {
-                fprintf(stderr, "ERROR: iPhone closed connection while reading %s (%zu/%zu bytes)\n", part, got, n);
+                log_line(stderr, "ERROR: iPhone closed connection while reading %s (%zu/%zu bytes)\n", part, got, n);
             } else {
-                fprintf(stderr, "ERROR: recv %s failed: WSA=%d\n", part, socketError);
+                log_line(stderr, "ERROR: recv %s failed: WSA=%d\n", part, socketError);
             }
             return false;
         }
@@ -556,9 +579,9 @@ static bool read_exact(SOCKET fd, uint8_t *buf, size_t n, const char *part, long
 
 static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-    if (!codec) { fprintf(stderr, "ERROR: HEVC decoder not found\n"); return nullptr; }
+    if (!codec) { log_line(stderr, "ERROR: HEVC decoder not found\n"); return nullptr; }
     AVCodecContext *ctx = avcodec_alloc_context3(codec);
-    if (!ctx) { fprintf(stderr, "ERROR: avcodec_alloc_context3 failed\n"); return nullptr; }
+    if (!ctx) { log_line(stderr, "ERROR: avcodec_alloc_context3 failed\n"); return nullptr; }
 
     // D3D11VA hardware acceleration.
     AVBufferRef *hw = nullptr;
@@ -567,17 +590,17 @@ static AVCodecContext *init_decoder(DecodeTelemetry &telemetry) {
         ctx->hw_device_ctx = av_buffer_ref(hw);
         ctx->get_format = select_d3d11_format;
         av_buffer_unref(&hw);
-        printf("INFO: D3D11VA requested\n");
+        log_line(stdout, "INFO: D3D11VA requested\n");
     } else {
-        printf("WARN: D3D11VA unavailable, falling back to software\n");
+        log_line(stdout, "WARN: D3D11VA unavailable, falling back to software\n");
     }
 
     if (avcodec_open2(ctx, codec, nullptr) < 0) {
-        fprintf(stderr, "ERROR: avcodec_open2 failed\n");
+        log_line(stderr, "ERROR: avcodec_open2 failed\n");
         avcodec_free_context(&ctx);
         return nullptr;
     }
-    printf("INFO: HEVC decoder ready\n");
+    log_line(stdout, "INFO: HEVC decoder ready\n");
     return ctx;
 }
 
@@ -592,7 +615,7 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
                 ++telemetry.d3d11_frames;
                 if (!telemetry.first_frame_reported) {
                     telemetry.first_frame_reported = true;
-                    printf("INFO: verified GPU decode: D3D11 NV12 surface %dx%d\n",
+                    log_line(stdout, "INFO: verified GPU decode: D3D11 NV12 surface %dx%d\n",
                            frame->width, frame->height);
                 }
                 const uint64_t timestamp_us = frame->best_effort_timestamp == AV_NOPTS_VALUE
@@ -601,14 +624,14 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
                 if (publish_hr == S_FALSE) {
                     ++telemetry.gpu_backpressure_drops;
                 } else if (FAILED(publish_hr)) {
-                    fprintf(stderr, "ERROR: GPU frame publish failed: 0x%08lX\n",
+                    log_line(stderr, "ERROR: GPU frame publish failed: 0x%08lX\n",
                             static_cast<unsigned long>(publish_hr));
                 }
             } else {
                 ++telemetry.software_frames;
                 if (!telemetry.first_frame_reported) {
                     telemetry.first_frame_reported = true;
-                    fprintf(stderr, "ERROR: decoder returned %s, not a D3D11 surface\n",
+                    log_line(stderr, "ERROR: decoder returned %s, not a D3D11 surface\n",
                             av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
                 }
             }
@@ -616,7 +639,7 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame, uint64_t &deco
             continue;
         }
         if (status == AVERROR(EAGAIN) || status == AVERROR_EOF) return 0;
-        fprintf(stderr, "ERROR: avcodec_receive_frame failed: %d\n", status);
+        log_line(stderr, "ERROR: avcodec_receive_frame failed: %d\n", status);
         return status;
     }
 }
@@ -631,7 +654,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     AVPacket *packet = av_packet_alloc();
     AVFrame *decodedFrame = av_frame_alloc();
     if (!packet || !decodedFrame) {
-        fprintf(stderr, "ERROR: FFmpeg packet/frame allocation failed\n");
+        log_line(stderr, "ERROR: FFmpeg packet/frame allocation failed\n");
         av_packet_free(&packet);
         av_frame_free(&decodedFrame);
         if (dec) avcodec_free_context(&dec);
@@ -647,23 +670,23 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     // in hour three of a long stream is not averaged away.
     auto windowStart = std::chrono::steady_clock::now();
     uint64_t windowStartFrame = 0, windowStartSourceUs = 0;
-    printf("INFO: waiting for first HEVC frame from iPhone\n");
+    log_line(stdout, "INFO: waiting for first HEVC frame from iPhone\n");
 
     while (true) {
         if (!read_exact(fd, hdr.data(), STREAM_HEADER_SIZE, "stream header", kHeaderIdleTimeoutMs)) break;
         stream_header_t h = {};
         if (!stream_header_read(hdr.data(), &h) || !stream_header_is_valid(&h)) {
-            fprintf(stderr, "ERROR: invalid stream header, stream desync\n");
+            log_line(stderr, "ERROR: invalid stream header, stream desync\n");
             break;
         }
         if (h.codec != STREAM_CODEC_HEVC) {
-            fprintf(stderr, "ERROR: unsupported stream codec %u\n", static_cast<unsigned>(h.codec));
+            log_line(stderr, "ERROR: unsupported stream codec %u\n", static_cast<unsigned>(h.codec));
             break;
         }
         // av_new_packet supplies AV_INPUT_BUFFER_PADDING_SIZE zero bytes, which
         // optimized FFmpeg bitstream readers are allowed to read past payload.
         if (av_new_packet(packet, static_cast<int>(h.frame_size)) < 0) {
-            fprintf(stderr, "ERROR: av_new_packet failed for %u bytes\n", h.frame_size);
+            log_line(stderr, "ERROR: av_new_packet failed for %u bytes\n", h.frame_size);
             break;
         }
         if (!read_exact(fd, packet->data, h.frame_size, "video frame", kPayloadTimeoutMs)) {
@@ -682,7 +705,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             if (!accessUnit.IsDecoderJoinPoint()) {
                 ++skippedUntilRandomAccess;
                 if (skippedUntilRandomAccess == 1 || skippedUntilRandomAccess % 60 == 0) {
-                    fprintf(stderr,
+                    log_line(stderr,
                             "INFO: waiting for HEVC VPS/SPS/PPS+IDR join AU; "
                             "skipped %llu frames\n",
                             static_cast<unsigned long long>(skippedUntilRandomAccess));
@@ -692,12 +715,12 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             }
             if (dec) avcodec_flush_buffers(dec);
             waitingForRandomAccess = false;
-            printf("INFO: HEVC decoder-join AU received after %llu skipped frames\n",
+            log_line(stdout, "INFO: HEVC decoder-join AU received after %llu skipped frames\n",
                    static_cast<unsigned long long>(skippedUntilRandomAccess));
         }
 
         if (frames == 0) {
-            printf("INFO: first HEVC packet=%u bytes frame=%u\n",
+            log_line(stdout, "INFO: first HEVC packet=%u bytes frame=%u\n",
                    h.frame_size, h.frame_number);
             windowStart = std::chrono::steady_clock::now();
             windowStartFrame = 1;
@@ -734,7 +757,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
                 }
             }
             if (status < 0) {
-                fprintf(stderr, "ERROR: avcodec_send_packet failed: %d\n", status);
+                log_line(stderr, "ERROR: avcodec_send_packet failed: %d\n", status);
             } else {
                 drain_decoder(dec, decodedFrame, decoded, decodeTelemetry, gpuPublisher,
                               h.timestamp_us);
@@ -750,7 +773,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             const double sourceSeconds = previousTimestampUs > windowStartSourceUs
                 ? static_cast<double>(previousTimestampUs - windowStartSourceUs) / 1'000'000.0 : 0.0;
             const double sourceFps = sourceSeconds > 0 ? windowIntervals / sourceSeconds : 0.0;
-            printf("STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu relayGateDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu "
+            log_line(stdout, "STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu relayGateDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu "
                    "extraDelayMs=%.1f maxExtraMs=%.1f maxGapMs=%.1f burst=%u skewMs=%.1f mode=%s frames\n",
                    recvFps, sourceFps,
                    static_cast<unsigned long long>(sourceGapFrames),
@@ -776,7 +799,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     av_packet_free(&packet);
     av_frame_free(&decodedFrame);
     if (dec) avcodec_free_context(&dec);
-    printf("INFO: done, received %llu frames\n",
+    log_line(stdout, "INFO: done, received %llu frames\n",
            static_cast<unsigned long long>(frames));
 }
 
@@ -869,7 +892,7 @@ static std::string discover_iphone_wifi_host() {
     browse.pBrowseCallback = on_wifi_browse;
     browse.pQueryContext = reinterpret_cast<PVOID>(generation);
     if (DnsServiceBrowse(&browse, &browseCancel) != DNS_REQUEST_PENDING) {
-        fprintf(stderr, "WARN: Wi-Fi discovery could not start\n");
+        log_line(stderr, "WARN: Wi-Fi discovery could not start\n");
         return std::string();
     }
     const bool browsed = wait_wifi_step(kStepTimeoutMs);
@@ -882,7 +905,7 @@ static std::string discover_iphone_wifi_host() {
         ResetEvent(g_wifi.event);
     }
     if (!browsed || instance.empty()) return std::string();
-    printf("INFO: Wi-Fi discovery: found service %s; resolving its address\n", instance.c_str());
+    log_line(stdout, "INFO: Wi-Fi discovery: found service %s; resolving its address\n", instance.c_str());
 
     std::wstring query(instance.begin(), instance.end());
     DNS_SERVICE_CANCEL resolveCancel{};
@@ -892,7 +915,7 @@ static std::string discover_iphone_wifi_host() {
     resolve.pResolveCompletionCallback = on_wifi_resolve;
     resolve.pQueryContext = reinterpret_cast<PVOID>(generation);
     if (DnsServiceResolve(&resolve, &resolveCancel) != DNS_REQUEST_PENDING) {
-        fprintf(stderr, "WARN: Wi-Fi discovery could not resolve %s\n", instance.c_str());
+        log_line(stderr, "WARN: Wi-Fi discovery could not resolve %s\n", instance.c_str());
         return std::string();
     }
     const bool resolved = wait_wifi_step(kStepTimeoutMs);
@@ -904,10 +927,10 @@ static std::string discover_iphone_wifi_host() {
         ++g_wifi.generation;
     }
     if (!resolved || host.empty()) {
-        fprintf(stderr, "WARN: Wi-Fi discovery: %s did not resolve to a usable IPv4 address\n", instance.c_str());
+        log_line(stderr, "WARN: Wi-Fi discovery: %s did not resolve to a usable IPv4 address\n", instance.c_str());
         return std::string();
     }
-    printf("INFO: Wi-Fi discovery found %s at %s\n", instance.c_str(), host.c_str());
+    log_line(stdout, "INFO: Wi-Fi discovery found %s at %s\n", instance.c_str(), host.c_str());
     return host;
 }
 
@@ -969,7 +992,7 @@ static void fetch_crash_report(std::string host, bool directTcp) {
         const bool gotHeader = read_exact(fd, header, sizeof(header), "crash report header", 5'000);
         const auto length = gotHeader ? crash_report::ParseHeader(header) : std::nullopt;
         if (gotHeader && !length) {
-            fprintf(stderr, "WARN: ignoring an invalid crash report header from the phone\n");
+            log_line(stderr, "WARN: ignoring an invalid crash report header from the phone\n");
         } else if (length) {
             std::vector<uint8_t> payload(*length);
             if (read_exact(fd, payload.data(), payload.size(), "crash report", 10'000)) {
@@ -986,9 +1009,9 @@ static void fetch_crash_report(std::string host, bool directTcp) {
                 if (saved) {
                     const char ack = static_cast<char>(crash_report::kAck);
                     send(fd, &ack, 1, 0);  // only now may the phone delete its copy
-                    printf("INFO: iPhone crash report saved to %s (%zu bytes)\n", path.c_str(), payload.size());
+                    log_line(stdout, "INFO: iPhone crash report saved to %s (%zu bytes)\n", path.c_str(), payload.size());
                 } else {
-                    fprintf(stderr, "WARN: could not save the iPhone crash report to %s\n", path.c_str());
+                    log_line(stderr, "WARN: could not save the iPhone crash report to %s\n", path.c_str());
                 }
             }
         }
@@ -1012,7 +1035,7 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
     if (obsUdpRelay && !relay.Open(false)) {
         // Never exit on an OBS-side failure (R-ENG-ERR): keep receiving and
         // reopen the relay on the first decoder-join AU.
-        fprintf(stderr, "WARN: OBS relay could not open; retrying on the next HEVC keyframe\n");
+        log_line(stderr, "WARN: OBS relay could not open; retrying on the next HEVC keyframe\n");
         relay.ArmRecovery();
     }
 
@@ -1022,7 +1045,7 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
         std::string target = usbNetworkHost;
         if (wifiDiscover) target = discover_iphone_wifi_host();
         if (wifiDiscover && target.empty() && !g_stopRequested.load()) {
-            fprintf(stderr, "INFO: no iPhone found on Wi-Fi (is Wi-Fi mode on in the app?)\n");
+            log_line(stderr, "INFO: no iPhone found on Wi-Fi (is Wi-Fi mode on in the app?)\n");
         }
         const SOCKET fd = connect_to_device(target.c_str(), directTcp || wifiDiscover);
         if (fd != INVALID_SOCKET) {
@@ -1037,14 +1060,14 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
             if (g_stopRequested.load()) break;
             // The phone is usually still there (app relaunch, preset change,
             // a timed-out frame): reconnect quickly so OBS freezes briefly.
-            fprintf(stderr, "WARN: stream ended; reconnecting in 250 ms\n");
+            log_line(stderr, "WARN: stream ended; reconnecting in 250 ms\n");
             sleep_unless_stopped(kReconnectDelayMs);
         } else {
-            fprintf(stderr, "INFO: retrying iPhone connection in 1 second\n");
+            log_line(stderr, "INFO: retrying iPhone connection in 1 second\n");
             sleep_unless_stopped(kNoDeviceRetryMs);
         }
     }
-    printf("INFO: stop requested; closing OBS relay\n");
+    log_line(stdout, "INFO: stop requested; closing OBS relay\n");
     return 0;
 }
 
@@ -1081,13 +1104,13 @@ static void disable_console_quick_edit() {
 }
 
 int main(int argc, char** argv) {
-    // Redirected to a file (`receiver.exe > log.txt` for a long stream), stdout
-    // is fully buffered: INFO lines would land out of order with stderr and be
-    // lost if the process dies. At most one STAT line per 2 s, so this is cheap.
+    // Our lines bypass the CRT buffers (log_line). Redirected to a file, stdout
+    // would otherwise be fully buffered, so keep any library output on it
+    // unbuffered too: in order with stderr, and not lost if the process dies.
     setvbuf(stdout, nullptr, _IONBF, 0);
     WSADATA winsock{};
     if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
-        fprintf(stderr, "ERROR: WSAStartup failed\n");
+        log_line(stderr, "ERROR: WSAStartup failed\n");
         return 1;
     }
     disable_console_quick_edit();
@@ -1113,14 +1136,14 @@ int main(int argc, char** argv) {
             wifiDiscover = true;
         } else if (std::strcmp(argv[index], "--host") == 0) {
             if (index + 1 >= argc) {
-                fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
+                log_line(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
                 return 2;
             }
             directHost = argv[++index];
         } else if (!explicitHost) {
             explicitHost = argv[index];
         } else {
-            fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
+            log_line(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
             return 2;
         }
     }
@@ -1128,7 +1151,7 @@ int main(int argc, char** argv) {
     // setting and makes no sense together with Wi-Fi discovery.
     if (directHost != nullptr) wifiDiscover = false;
     if (wifiDiscover && explicitHost != nullptr) {
-        fprintf(stderr, "ERROR: --wifi cannot be combined with a USB host argument\n");
+        log_line(stderr, "ERROR: --wifi cannot be combined with a USB host argument\n");
         return 2;
     }
     const bool directTcp = directHost != nullptr;
@@ -1136,16 +1159,16 @@ int main(int argc, char** argv) {
     const std::string usbNetworkHost = directTcp ? directHost : explicitHost ? explicitHost :
         (environmentHost && *environmentHost ? environmentHost :
          (discoveredHost.empty() ? kPersonalHotspotGateway : discoveredHost));
-    printf("INFO: iPhone Camera USB receiver build=%s\n",
+    log_line(stdout, "INFO: iPhone Camera USB receiver build=%s\n",
            obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
     if (wifiDiscover) {
-        printf("INFO: iPhone Camera receiver started; Wi-Fi discovery (_ipcamstream._tcp) port=%u\n",
+        log_line(stdout, "INFO: iPhone Camera receiver started; Wi-Fi discovery (_ipcamstream._tcp) port=%u\n",
                DEVICE_PORT);
     } else if (directTcp) {
-        printf("INFO: iPhone Camera receiver started; direct TCP host=%s port=%u\n",
+        log_line(stdout, "INFO: iPhone Camera receiver started; direct TCP host=%s port=%u\n",
                usbNetworkHost.c_str(), DEVICE_PORT);
     } else {
-        printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
+        log_line(stdout, "INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
                usbNetworkHost.c_str(), DEVICE_PORT);
     }
     const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost, directTcp, wifiDiscover);

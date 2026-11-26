@@ -54,3 +54,11 @@ grep -q 'std::vector<uint8_t> payload(\*length)' "$receiver"
 grep -q 'crash_report::kAck' "$receiver"
 grep -q 'std::thread(fetch_crash_report' "$receiver"
 grep -q 'start_crash_report_fetch(target' "$receiver"
+
+# The fetch thread logs while the main thread does: every line must be one write
+# (log_line), or redirected logs interleave byte by byte and garble both lines.
+grep -Fq '_write(_fileno(stream), line' "$receiver"
+if grep -qE '(^|[^a-z_:])f?printf\(' "$receiver"; then
+  echo "receiver.cpp must log through log_line, not printf/fprintf" >&2
+  exit 1
+fi
