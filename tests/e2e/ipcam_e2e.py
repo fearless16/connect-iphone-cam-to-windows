@@ -8,6 +8,7 @@ Python 3.8+ standard library only. Everything runs in one process, so every
 timestamp comes from one clock (time.monotonic_ns). See tests/e2e/README.md.
 """
 import argparse
+import collections
 import json
 import os
 import shutil
@@ -226,6 +227,9 @@ class FakePhone:
 
 
 class UdpSink:
+    """Receives datagrams on its own thread; the main thread drains them with
+    take(), so a long soak keeps no backlog in memory."""
+
     def __init__(self, rcvbuf=16 * 1024 * 1024):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
@@ -235,7 +239,8 @@ class UdpSink:
             raise ScenarioFailure("UDP sink could not bind 127.0.0.1:%d (is OBS or another "
                                   "receiver test running?): %s" % (OBS_PORT, error))
         self.sock.settimeout(0.2)
-        self.datagrams = []  # (arrival_ns, bytes)
+        self.queue = collections.deque()  # (arrival_ns, bytes); deque is thread-safe
+        self.count = 0
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -250,7 +255,15 @@ class UdpSink:
                 continue
             except OSError:
                 return
-            self.datagrams.append((time.monotonic_ns(), data))
+            self.queue.append((time.monotonic_ns(), data))
+            self.count += 1
+
+    def take(self):
+        while True:
+            try:
+                yield self.queue.popleft()
+            except IndexError:
+                return
 
     def stop(self):
         self.stop_event.set()
@@ -263,18 +276,16 @@ class UdpSink:
 
 
 class Pes:
-    __slots__ = ("arrival_ns", "pts", "data")
+    """One relayed video PES. Its payload is dropped once it is complete."""
+    __slots__ = ("arrival_ns", "pts", "types")
 
     def __init__(self, arrival_ns):
         self.arrival_ns = arrival_ns
         self.pts = None
-        self.data = bytearray()
+        self.types = frozenset()
 
     def nal_types(self):
-        if len(self.data) < 9:
-            return set()
-        payload = bytes(self.data[9 + self.data[8]:])
-        return {nal_type(n) for n in split_nals(payload) if n}
+        return self.types
 
 
 def parse_pts(b):
@@ -286,20 +297,42 @@ def section_payload(pkt, start):
     return pkt[start + 1 + pointer:]
 
 
-def analyze(datagrams):
-    pmt_pids, video_pid = set(), None
-    last_cc = {}
-    cc_errors = 0
-    pes_list = []
-    current = None
-    stray = 0
-    for arrival, data in datagrams:
+class TsAnalyzer:
+    """Incremental MPEG-TS parser: PAT -> PMT -> HEVC PID (stream_type 0x24),
+    continuity counters, and PES packets with PTS and NAL types."""
+
+    def __init__(self, capture_path, capture_limit=256 * 2**20):
+        self.pmt_pids = set()
+        self.video_pid = None
+        self.last_cc = {}
+        self.cc_errors = 0
+        self.pes = []
+        self.stray = 0
+        self.current = None
+        self.current_data = bytearray()
+        self.capture = open(capture_path, "wb")
+        self.capture_left = capture_limit
+
+    def _finish_pes(self):
+        pes, data = self.current, self.current_data
+        if pes is None:
+            return
+        if len(data) >= 14 and data[:3] == b"\x00\x00\x01" and data[7] & 0x80:
+            pes.pts = parse_pts(data[9:14])
+        if len(data) >= 9:
+            pes.types = frozenset(nal_type(n) for n in split_nals(bytes(data[9 + data[8]:])) if n)
+        self.current, self.current_data = None, bytearray()
+
+    def feed(self, arrival, data):
+        if self.capture_left > 0:
+            self.capture.write(data)
+            self.capture_left -= len(data)
         if len(data) % 188:
-            stray += 1
+            self.stray += 1
         for off in range(0, len(data) - 187, 188):
             pkt = data[off:off + 188]
             if pkt[0] != 0x47:
-                stray += 1
+                self.stray += 1
                 continue
             pid = ((pkt[1] & 0x1F) << 8) | pkt[2]
             pusi = bool(pkt[1] & 0x40)
@@ -312,10 +345,10 @@ def analyze(datagrams):
                 discontinuity = af_len > 0 and bool(pkt[5] & 0x80)
                 start = 5 + af_len
             if afc & 0x1:
-                if pid in last_cc and not discontinuity and cc != (last_cc[pid] + 1) & 0xF \
-                        and cc != last_cc[pid]:
-                    cc_errors += 1
-                last_cc[pid] = cc
+                last = self.last_cc.get(pid)
+                if last is not None and not discontinuity and cc != (last + 1) & 0xF and cc != last:
+                    self.cc_errors += 1
+                self.last_cc[pid] = cc
             if not afc & 0x1 or start >= 188:
                 continue
             if pid == 0 and pusi:
@@ -323,26 +356,28 @@ def analyze(datagrams):
                 length = ((table[1] & 0x0F) << 8) | table[2]
                 for i in range(8, 3 + length - 4, 4):
                     if (table[i] << 8) | table[i + 1]:
-                        pmt_pids.add(((table[i + 2] & 0x1F) << 8) | table[i + 3])
-            elif pid in pmt_pids and pusi:
+                        self.pmt_pids.add(((table[i + 2] & 0x1F) << 8) | table[i + 3])
+            elif pid in self.pmt_pids and pusi:
                 table = section_payload(pkt, start)
                 length = ((table[1] & 0x0F) << 8) | table[2]
                 i = 12 + (((table[10] & 0x0F) << 8) | table[11])
                 while i + 5 <= 3 + length - 4:
-                    es_pid = ((table[i + 1] & 0x1F) << 8) | table[i + 2]
                     if table[i] == 0x24:
-                        video_pid = es_pid
+                        self.video_pid = ((table[i + 1] & 0x1F) << 8) | table[i + 2]
                     i += 5 + (((table[i + 3] & 0x0F) << 8) | table[i + 4])
-            elif pid == video_pid:
+            elif pid == self.video_pid:
                 if pusi:
-                    current = Pes(arrival)
-                    pes_list.append(current)
-                if current is not None:
-                    current.data += pkt[start:]
-    for pes in pes_list:
-        if len(pes.data) >= 14 and pes.data[:3] == b"\x00\x00\x01" and pes.data[7] & 0x80:
-            pes.pts = parse_pts(pes.data[9:14])
-    return {"video_pid": video_pid, "cc_errors": cc_errors, "pes": pes_list, "stray": stray}
+                    self._finish_pes()
+                    self.current = Pes(arrival)
+                    self.pes.append(self.current)
+                if self.current is not None:
+                    self.current_data += pkt[start:]
+
+    def result(self):
+        self._finish_pes()
+        self.capture.close()
+        return {"video_pid": self.video_pid, "cc_errors": self.cc_errors, "pes": self.pes,
+                "stray": self.stray}
 
 
 # --------------------------------------------------------------------------
@@ -473,12 +508,21 @@ def latency_summary(pes, relayed, summary):
 
 
 def ffmpeg_decode_errors(workdir):
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
+    """Decodes every frame of capture.ts with ffprobe and returns its error output.
+    ffprobe, not `ffmpeg -f null`: the ffmpeg CLI re-times frames to 1/60 s for
+    its output, so two frames that arrived 1 ms apart (valid, strictly
+    increasing 90 kHz PTS) are reported as a muxer DTS error that OBS never sees."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
         return None
-    result = subprocess.run([ffmpeg, "-v", "error", "-i", os.path.join(workdir, "capture.ts"),
-                             "-f", "null", "-"], capture_output=True, timeout=120)
-    return (result.stdout + result.stderr).decode("utf-8", "replace").strip()
+    result = subprocess.run([ffprobe, "-v", "error", "-show_entries", "frame=key_frame",
+                             "-of", "csv=p=0", os.path.join(workdir, "capture.ts")],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+    frames = len(result.stdout.split())
+    errors = result.stderr.decode("utf-8", "replace").strip()
+    if result.returncode != 0 and not errors:
+        errors = "ffprobe exited with %d" % result.returncode
+    return errors if errors or frames else "ffprobe decoded no frames"
 
 
 # steady: one 6 s session from an IDR.
@@ -496,8 +540,8 @@ def steady_check(ctx, summary):
           "%d PES for %d AUs sent" % (len(pes), len(relayed)))
     check(ctx["ts"]["cc_errors"] == 0, "A4 continuity-counter errors", str(ctx["ts"]["cc_errors"]))
     errors = ffmpeg_decode_errors(ctx["workdir"])
-    summary["ffmpeg_decode"] = "skipped (no ffmpeg on PATH)" if errors is None else (errors or "clean")
-    check(not errors, "A6 ffmpeg decodes capture.ts without errors", (errors or "")[:400])
+    summary["ffmpeg_decode"] = "skipped (no ffprobe on PATH)" if errors is None else (errors or "clean")
+    check(not errors, "A6 ffprobe decodes capture.ts without errors", (errors or "")[:400])
     lat = latency_summary(pes, relayed, summary)
     check(percentile(lat, 0.95) < 50, "A7 relay latency p95 < 50 ms", "%.1f ms" % percentile(lat, 0.95))
 
@@ -751,11 +795,12 @@ def run(args):
     clock_rate = SCENARIOS[args.scenario][3] if len(SCENARIOS[args.scenario]) > 3 else 1.0
     if duration is None:
         duration = args.duration
-    units = load_access_units(FIXTURE)
+    units = load_access_units(args.fixture)
     workdir = args.workdir or tempfile.mkdtemp(prefix="ipcam_e2e_%s_" % args.scenario)
     os.makedirs(workdir, exist_ok=True)
     print("E2E %s: workdir %s" % (args.scenario, workdir), flush=True)
     sink = UdpSink()
+    analyzer = TsAnalyzer(os.path.join(workdir, "capture.ts"))
     phone = FakePhone(units, make_session(args), clock_rate)
     receiver = None
     memory = []
@@ -767,14 +812,16 @@ def run(args):
         next_report = t0 + 60
         while time.monotonic() - t0 < duration and receiver.alive():
             time.sleep(1.0)
+            for arrival, data in sink.take():
+                analyzer.feed(arrival, data)
             sample = receiver.memory()
             if sample:
                 memory.append((time.monotonic() - t0, sample[0], sample[1]))
             if time.monotonic() >= next_report:
                 next_report += 60
-                print("E2E %s: %.0f s, %d datagrams, private %.1f MiB" % (
-                    args.scenario, time.monotonic() - t0, len(sink.datagrams),
-                    (sample[0] / 2**20) if sample else 0), flush=True)
+                print("E2E %s: %.0f s, %d datagrams, %d PES, private %.1f MiB, %d handles" % (
+                    args.scenario, time.monotonic() - t0, sink.count, len(analyzer.pes),
+                    (sample[0] / 2**20) if sample else 0, sample[1] if sample else 0), flush=True)
         phone.stop()
         time.sleep(0.5)
         alive = receiver.alive()
@@ -783,12 +830,11 @@ def run(args):
         sink.stop()
         if receiver:
             receiver.stop()
-    with open(os.path.join(workdir, "capture.ts"), "wb") as f:
-        for _, data in sink.datagrams:
-            f.write(data)
+    for arrival, data in sink.take():
+        analyzer.feed(arrival, data)
     ctx = {"alive": alive, "receiver": receiver, "phone": phone, "workdir": workdir,
-           "ts": analyze(sink.datagrams), "log": receiver.text(), "memory": memory}
-    summary = {"scenario": args.scenario, "seconds": duration, "datagrams": len(sink.datagrams),
+           "ts": analyzer.result(), "log": receiver.text(), "memory": memory}
+    summary = {"scenario": args.scenario, "seconds": duration, "datagrams": sink.count,
                "clean_stop": receiver.clean_stop}
     try:
         verify(ctx, summary)
@@ -807,6 +853,8 @@ def main():
     parser.add_argument("--receiver", required=True, help="path to receiver.exe")
     parser.add_argument("--scenario", required=True, choices=sorted(SCENARIOS))
     parser.add_argument("--workdir", help="keep logs and capture.ts here (default: a temp dir)")
+    parser.add_argument("--fixture", default=FIXTURE,
+                        help="Annex-B HEVC file with AUDs and closed GOPs (see README); default the 360p fixture")
     parser.add_argument("--duration", type=float, default=45.0, help="soak: total seconds")
     parser.add_argument("--session-seconds", type=float, default=15.0, help="soak: seconds per phone session")
     args = parser.parse_args()

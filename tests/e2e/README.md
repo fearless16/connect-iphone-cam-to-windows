@@ -8,7 +8,7 @@ fake iPhone (TCP 127.0.0.1:12345) -> receiver.exe --host 127.0.0.1
 ```
 
 It needs Python 3.8+ (standard library only) and, for the decode check, the
-`ffmpeg` CLI on PATH. Nothing else is installed.
+`ffprobe` CLI on PATH (`ffmpeg` only to regenerate fixtures). Nothing else is installed.
 
 ```sh
 sh scripts/build_receiver_msys2.sh                  # builds build/windows-binaries/receiver.exe
@@ -27,7 +27,7 @@ Each run prints `E2E_SUMMARY {json}` and `E2E PASS|FAIL <scenario>`, and keeps
 
 | Scenario | Fake phone does | Checks |
 |---|---|---|
-| `steady` | 6 s at 60 fps from an IDR | receiver alive; first PES is VPS/SPS/PPS+IDR; every AU relayed; 0 CC errors; PTS strictly increasing; `ffmpeg` decodes `capture.ts` cleanly; relay latency p95 < 50 ms |
+| `steady` | 6 s at 60 fps from an IDR | receiver alive; first PES is VPS/SPS/PPS+IDR; every AU relayed; 0 CC errors; PTS strictly increasing; `ffprobe` decodes every frame of `capture.ts` without errors; relay latency p95 < 50 ms |
 | `midgop` | starts each session on a delta frame | nothing relayed before the first join AU |
 | `disconnect` | closes after 2 s, then a new session from an IDR | reconnect gap below the limit; session 2 starts at a join point; CC continuous |
 | `stall` | 3 s silence between frames | no reconnect; relaying resumes |
