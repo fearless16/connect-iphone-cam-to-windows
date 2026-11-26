@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 source="$1"
 
@@ -61,7 +63,7 @@ grep -q 'HEVC encoder setup recovery' "$source"
 # VideoToolbox may report an asynchronous output failure after EncodeFrame
 # itself succeeded. That callback must not fail silently or invalidate the
 # session from VideoToolbox's callback thread.
-! grep -q 'guard let sb = sampleBuffer, status == noErr else { return }' "$source"
+forbid -q 'guard let sb = sampleBuffer, status == noErr else { return }' "$source"
 grep -q 'handleEncoderOutputFailure' "$source"
 grep -q 'CAMERA encoder error • recovering' "$source"
 grep -q 'Encoder callback recovery' "$source"

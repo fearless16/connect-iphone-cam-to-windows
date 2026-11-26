@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 streamer="$1"
 view_controller="$2"
@@ -13,7 +15,7 @@ grep -q 'func nextProtocolTimestampUs()' "$streamer"
 grep -q 'lastProtocolTimestampUs' "$streamer"
 grep -q 'max(monotonicUs(), lastProtocolTimestampUs + 1)' "$streamer"
 grep -q 'timestampUs: nextProtocolTimestampUs()' "$streamer"
-! grep -q 'timestampUs: presentationTimestampUs(sampleBuffer)' "$streamer"
+forbid -q 'timestampUs: presentationTimestampUs(sampleBuffer)' "$streamer"
 
 # Portrait is an explicit persisted output choice; changing it only rotates the
 # video-data connection and rebuilds the encoder for the new buffer dimensions.
@@ -60,7 +62,7 @@ grep -q 'arrival_clock_.Stamp(arrivalUs)' "$receiver"
 grep -q 'relay->Write(\*packet, arrivalUs, accessUnit)' "$receiver"
 grep -q 'last_mux_pts_' "$receiver"
 grep -q 'std::max(candidatePts, last_mux_pts_ + 1)' "$receiver"
-! grep -q 'timestampUs - first_timestamp_us_' "$receiver"
+forbid -q 'timestampUs - first_timestamp_us_' "$receiver"
 
 # Review fix: the mach timebase is constant for the process; never query it per frame.
 grep -q 'static let machTimebase' "$streamer"
@@ -69,5 +71,8 @@ mono_body=$(awk '
   in_fn { print }
   in_fn && /^    }$/ { exit }
 ' "$streamer")
-! printf '%s\n' "$mono_body" | grep -q 'mach_timebase_info('
+if printf '%s\n' "$mono_body" | grep -q 'mach_timebase_info('; then
+  echo "monotonicUs() must not query mach_timebase_info per frame" >&2
+  exit 1
+fi
 printf '%s\n' "$mono_body" | grep -q 'Self.machTimebase'

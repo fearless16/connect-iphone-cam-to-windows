@@ -57,6 +57,15 @@ struct CrashReportStore {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
+    /// Deletes the pending report only if it is still `delivered`. A newer report
+    /// saved while the older one was being sent must survive the older one's ack.
+    @discardableResult
+    func clear(matching delivered: Data) -> Bool {
+        guard pending == delivered else { return false }
+        clear()
+        return true
+    }
+
     /// Wraps MetricKit's JSON with the context a debugger needs. If the result
     /// would exceed the size cap, the diagnostics shrink to a text head, then to
     /// a stub, so a report is always small enough to store and send.

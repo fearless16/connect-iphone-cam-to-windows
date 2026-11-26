@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 set -eu
+# A bare "! grep" never fails under set -e (POSIX); forbid() does.
+forbid() { if grep "$@"; then echo "forbidden pattern present: $*" >&2; exit 1; fi; }
 
 converter="${1:-ios/LengthPrefixedHEVC.swift}"
 camera="${2:-ios/CameraStreamer.swift}"
@@ -23,7 +25,7 @@ grep -q 'CMBlockBufferCopyDataBytes' "$converter"
 grep -q 'LengthPrefixedHEVC.convert(' "$camera"
 grep -q 'encoded sample has no data buffer' "$camera"
 grep -q 'recordMalformedAccessUnitDrop' "$camera"
-! grep -q 'CMBlockBufferGetDataPointer' "$camera"
+forbid -q 'CMBlockBufferGetDataPointer' "$camera"
 grep -q 'CMBlockBufferAppendBufferReference' "$behavior_test"
 grep -q 'test fixture unexpectedly became contiguous' "$behavior_test"
 grep -q 'fragmented truncated sample must be rejected' "$behavior_test"
