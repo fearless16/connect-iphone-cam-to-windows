@@ -431,9 +431,9 @@ static SOCKET connect_tcp(const char* host, bool requireUsbInterface, unsigned p
     freeaddrinfo(results);
     if (socket != INVALID_SOCKET) {
         if (requireUsbInterface) {
-            log_line(stdout, "INFO: connected to iPhone USB network at %s:%u\n", host, DEVICE_PORT);
+            log_line(stdout, "INFO: connected to iPhone USB network at %s:%u\n", host, portNumber);
         } else {
-            log_line(stdout, "INFO: connected to iPhone at %s:%u (direct TCP)\n", host, DEVICE_PORT);
+            log_line(stdout, "INFO: connected to iPhone at %s:%u (direct TCP)\n", host, portNumber);
         }
     }
     return socket;
