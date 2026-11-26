@@ -3,7 +3,7 @@ set -eu
 
 workflow="$1"
 
-for test_name in protocol_selftest relay_timestamp_clock_test relay_recovery_gate_test hevc_access_unit_test stream_timing_test; do
+for test_name in protocol_selftest relay_timestamp_clock_test relay_recovery_gate_test hevc_access_unit_test stream_timing_test wifi_discovery_test; do
   grep -q "tests/${test_name}.cpp" "$workflow"
   grep -q -- "-o ${test_name}.exe" "$workflow"
   grep -q "./${test_name}.exe" "$workflow"

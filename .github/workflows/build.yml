@@ -199,12 +199,17 @@ jobs:
             -o stream_timing_test.exe
           ./stream_timing_test.exe
           g++ -std=c++20 -O2 \
+            -I"${{ github.workspace }}/windows" \
+            "${{ github.workspace }}/tests/wifi_discovery_test.cpp" \
+            -o wifi_discovery_test.exe
+          ./wifi_discovery_test.exe
+          g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
             "${{ github.workspace }}/windows/gpu_frame_publisher.cpp" \
             -o receiver.exe \
             $(pkg-config --libs libavcodec libavformat libavutil libswscale) \
-            $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ld3d11 -ldxgi -lmfplat -ladvapi32
+            $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ldnsapi -ld3d11 -ldxgi -lmfplat -ladvapi32
           ls -lh receiver.exe
           mkdir -p windows-binaries
           cp receiver.exe windows-binaries/

@@ -101,7 +101,10 @@ cable is not practical.
 2. On the phone, turn on the **Wi-Fi** switch (top right). It is off by default
    and remembers its setting. The status panel then shows
    `WI-FI <ip>:12345 • visible to this network`.
-3. On the PC run `receiver.exe --host <ip>` with that address.
+3. On the PC run `receiver.exe --wifi`. It finds the phone through Bonjour
+   (`_ipcamstream._tcp`) and looks it up again on every reconnect. If discovery
+   finds nothing (some routers block multicast), run `receiver.exe --host <ip>`
+   with the address from step 2.
 
 Expect more latency and jitter than USB. While the switch is on, the stream is
 unauthenticated and visible to every device on that network. Turn the switch off
@@ -121,6 +124,7 @@ only the USB path works.
 | Connection is unreliable | Use a USB port directly on the motherboard (no hub) and a data-capable cable, not a charge-only one. |
 | Phone asks "Trust This Computer?" | Tap Trust and enter the passcode once. Without it the PC cannot reach the app. |
 | iOS asks "Allow accessory to connect?" | Allow it. |
+| Find the phone on Wi-Fi without typing its address | Run `receiver.exe --wifi` (Wi-Fi mode must be on in the app). `--host` wins if both are given. |
 | Connect to a specific phone address (Wi-Fi or tests) | Run `receiver.exe --host <ip>`. It connects straight to `<ip>:12345` and skips usbmux. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
