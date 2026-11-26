@@ -40,7 +40,7 @@ workflow below.
 | `ios/LengthPrefixedHEVC.swift` | AVCC→Annex-B conversion, IDR detection (pure) | Foundation, CoreMedia | Supported |
 | `ios/QualityAdvisor.swift` | Adaptive bit rate controller (pure) | Foundation | Supported |
 | `windows/receiver.cpp` | USB host discovery, TCP, header validation, OBS relay, `--gpu-ring` diagnostics | protocol, `relay_*.h`, `hevc_access_unit.h`, FFmpeg, usbmuxd, Winsock | Supported |
-| `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h` | Pure relay logic (clock, recovery gate, join-point detection, arrival timing stats) | C++ std only | Supported |
+| `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h`, `wifi_discovery.h` | Pure relay logic (clock, recovery gate, join-point detection, arrival timing stats, Bonjour result validation) | C++ std only | Supported |
 | `windows/gpu_frame_publisher.*` | D3D11 GPU ring producer (`--gpu-ring` only) | `mf_virtual_camera/gpu_frame_transport.h` (D1) | Diagnostics |
 | `windows/virtual_camera.cpp`, `directshow_compat*.h`, `frame_store.h`, `iphonecamera.def`, `windows/mf_virtual_camera/` | DirectShow / Media Foundation virtual camera | — | **Archived: do not build or extend** |
 | `third_party/VCamSample/` | Vendored reference sample | — | **Never edit** |

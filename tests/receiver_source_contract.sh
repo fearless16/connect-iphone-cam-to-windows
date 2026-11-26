@@ -59,6 +59,14 @@ sh "$(dirname "$0")/obs_udp_relay_contract.sh" "$receiver"
 
 # T2.1: arrival-timing stats and gate drops counted apart from write failures.
 grep -q '#include "stream_timing.h"' "$receiver"
+# T3.3: Wi-Fi discovery uses the Windows DNS-SD API; the pure validators gate what we connect to.
+grep -q '#include "wifi_discovery.h"' "$receiver"
+grep -q 'DnsServiceBrowse(' "$receiver"
+grep -q 'DnsServiceResolve(' "$receiver"
+grep -q '"--wifi"' "$receiver"
+grep -q 'wifi_discovery::IsServiceInstanceName' "$receiver"
+grep -q 'wifi_discovery::FormatEndpoint' "$receiver"
+grep -q 'if (directHost != nullptr) wifiDiscover = false;' "$receiver"
 grep -q 'timing.BeginSession()' "$receiver"
 grep -q 'timing.OnFrame(h.timestamp_us, arrivalUs)' "$receiver"
 grep -q 'timing.ResetWindow()' "$receiver"

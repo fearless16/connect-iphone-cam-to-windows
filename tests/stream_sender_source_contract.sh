@@ -118,6 +118,11 @@ printf '%s\n' "$failed_case" | grep -q 'conn\.cancel()'
 # T3.1 (G7 option A): Wi-Fi streaming is opt-in and off by default. Unless the
 # switch is on, the listener refuses Wi-Fi and cellular; USB still reaches it.
 grep -q 'func setWiFiEnabled' "$sender"
+# T3.3: Bonjour advertisement only while Wi-Fi mode is on; the plist declares the type.
+grep -Fq 'static let bonjourType = "_ipcamstream._tcp"' "$sender"
+grep -Fq 'newListener.service = NWListener.Service(name: nil, type: StreamSender.bonjourType)' "$sender"
+awk '/if wifiEnabled \{/ { armed = 1; next } armed && /NWListener\.Service/ { found = 1 } armed && /\}/ { exit } END { exit !found }' "$sender"
+grep -Fq '<string>_ipcamstream._tcp</string>' "$(dirname "$sender")/Info.plist"
 grep -Fq 'private var wifiEnabled = false' "$sender"
 grep -Fq 'if !wifiEnabled { params.prohibitedInterfaceTypes = [.wifi, .cellular] }' "$sender"
 grep -Fq 'params.serviceClass = .interactiveVideo' "$sender"

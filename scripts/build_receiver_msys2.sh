@@ -39,11 +39,16 @@ g++ -std=c++20 -O2 \
   -o build/stream_timing_test.exe
 ./build/stream_timing_test.exe
 g++ -std=c++20 -O2 \
+  -I"$root/windows" \
+  "$root/tests/wifi_discovery_test.cpp" \
+  -o build/wifi_discovery_test.exe
+./build/wifi_discovery_test.exe
+g++ -std=c++20 -O2 \
   -I"$root/protocol" \
   "$root/windows/receiver.cpp" \
   "$root/windows/gpu_frame_publisher.cpp" \
   -o build/windows-binaries/receiver.exe \
   $(pkg-config --libs libavcodec libavformat libavutil libswscale) \
-  $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ld3d11 -ldxgi -lmfplat -ladvapi32
+  $(pkg-config --libs libusbmuxd-2.0) -liphlpapi -lws2_32 -ldnsapi -ld3d11 -ldxgi -lmfplat -ladvapi32
 ls -lh build/windows-binaries/receiver.exe
 ldd build/windows-binaries/receiver.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | xargs -r -I{} cp "{}" build/windows-binaries/

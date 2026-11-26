@@ -14,6 +14,8 @@ enum StreamSenderConnectionState: Equatable {
 final class StreamSender {
 
     static let port: UInt16 = 12345
+    // T3.3: Bonjour service type; must match NSBonjourServices in Info.plist.
+    static let bonjourType = "_ipcamstream._tcp"
 
     private var listener: NWListener?
     private var connection: NWConnection?
@@ -265,6 +267,11 @@ final class StreamSender {
             publishConnectionState(.failed)
             scheduleRestart()
             return
+        }
+        // T3.3: announce over Bonjour only while Wi-Fi mode is on. The listener is
+        // rebuilt on every Wi-Fi switch change, so the advertisement follows it.
+        if wifiEnabled {
+            newListener.service = NWListener.Service(name: nil, type: StreamSender.bonjourType)
         }
         listenerReady = false
         listener = newListener

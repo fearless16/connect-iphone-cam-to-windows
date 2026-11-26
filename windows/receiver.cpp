@@ -14,10 +14,12 @@
 #include <atomic>
 #include <cwchar>
 #include <cstdlib>
+#include <mutex>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
+#include <windns.h>
 
 #include "gpu_frame_publisher.h"
 #include "hevc_access_unit.h"
@@ -25,6 +27,7 @@
 #include "relay_recovery.h"
 #include "relay_timestamp.h"
 #include "stream_timing.h"
+#include "wifi_discovery.h"
 
 #include "stream_protocol.h"   // from ../protocol
 #include <usbmuxd.h>
@@ -405,6 +408,7 @@ static std::string discover_iphone_usb_host() {
 
 static SOCKET connect_to_device(const char* host, bool directTcp) {
     if (directTcp) {
+        if (*host == '\0') return INVALID_SOCKET;  // Wi-Fi discovery found nothing
         const SOCKET direct = connect_tcp(host, false);
         if (direct == INVALID_SOCKET) {
             fprintf(stderr, "WARN: direct TCP connect to %s:%u failed\n", host, DEVICE_PORT);
@@ -719,7 +723,139 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
            static_cast<unsigned long long>(frames));
 }
 
-static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, bool directTcp) {
+// T3.3: find the phone on the LAN through Bonjour (_ipcamstream._tcp) with the
+// Windows DNS-SD API. Everything announced on the LAN is untrusted: the pure
+// validators in wifi_discovery.h decide what we will connect to.
+namespace {
+struct WifiDiscoveryState {
+    std::mutex mutex;
+    uintptr_t generation = 0;  // callbacks from an older attempt are ignored
+    std::string instance;      // validated service instance name
+    std::string host;          // validated dotted IPv4 address
+    HANDLE event = nullptr;    // signalled when the current step has a result
+};
+WifiDiscoveryState g_wifi;
+
+// ASCII-only narrowing: anything else is rejected by the validator.
+std::string narrow_ascii(const wchar_t* wide) {
+    std::string out;
+    if (wide == nullptr) return out;
+    for (; *wide != L'\0' && out.size() <= wifi_discovery::kMaxNameBytes; ++wide) {
+        out.push_back(*wide < 0x80 ? static_cast<char>(*wide) : '\x7F');
+    }
+    return out;
+}
+
+VOID WINAPI on_wifi_browse(DWORD status, PVOID context, PDNS_RECORD records) {
+    if (records == nullptr) return;
+    if (status == ERROR_SUCCESS) {
+        std::lock_guard<std::mutex> lock(g_wifi.mutex);
+        if (reinterpret_cast<uintptr_t>(context) == g_wifi.generation && g_wifi.instance.empty()) {
+            for (auto* record = reinterpret_cast<PDNS_RECORDW>(records); record != nullptr;
+                 record = record->pNext) {
+                // TTL 0 is a goodbye: the service went away.
+                if (record->wType != DNS_TYPE_PTR || record->dwTtl == 0) continue;
+                const std::string name = narrow_ascii(record->Data.PTR.pNameHost);
+                if (!wifi_discovery::IsServiceInstanceName(name)) continue;
+                g_wifi.instance = name;
+                SetEvent(g_wifi.event);
+                break;
+            }
+        }
+    }
+    DnsRecordListFree(records, DnsFreeRecordList);
+}
+
+VOID WINAPI on_wifi_resolve(DWORD status, PVOID context, PDNS_SERVICE_INSTANCE instance) {
+    if (instance == nullptr) return;
+    if (status == ERROR_SUCCESS && instance->ip4Address != nullptr) {
+        uint8_t octets[4];
+        std::memcpy(octets, instance->ip4Address, sizeof(octets));  // network order
+        const auto host = wifi_discovery::FormatEndpoint(octets, instance->wPort, DEVICE_PORT);
+        std::lock_guard<std::mutex> lock(g_wifi.mutex);
+        if (reinterpret_cast<uintptr_t>(context) == g_wifi.generation && host) {
+            g_wifi.host = *host;
+            SetEvent(g_wifi.event);
+        }
+    }
+    DnsServiceFreeInstance(instance);
+}
+
+// Waits in short slices so a stop request is noticed quickly.
+bool wait_wifi_step(int timeoutMs) {
+    for (int waited = 0; waited < timeoutMs && !g_stopRequested.load(); waited += 100) {
+        if (WaitForSingleObject(g_wifi.event, 100) == WAIT_OBJECT_0) return true;
+    }
+    return false;
+}
+}  // namespace
+
+// Returns the phone's IPv4 address, or an empty string when none was found.
+// Never fatal: the caller retries on the next connection attempt.
+static std::string discover_iphone_wifi_host() {
+    constexpr int kStepTimeoutMs = 3000;
+    if (g_wifi.event == nullptr) g_wifi.event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (g_wifi.event == nullptr) return std::string();
+
+    uintptr_t generation;
+    {
+        std::lock_guard<std::mutex> lock(g_wifi.mutex);
+        generation = ++g_wifi.generation;
+        g_wifi.instance.clear();
+        g_wifi.host.clear();
+        ResetEvent(g_wifi.event);
+    }
+    DNS_SERVICE_CANCEL browseCancel{};
+    DNS_SERVICE_BROWSE_REQUEST browse{};
+    browse.Version = DNS_QUERY_REQUEST_VERSION1;
+    browse.QueryName = L"_ipcamstream._tcp.local";
+    browse.pBrowseCallback = on_wifi_browse;
+    browse.pQueryContext = reinterpret_cast<PVOID>(generation);
+    if (DnsServiceBrowse(&browse, &browseCancel) != DNS_REQUEST_PENDING) {
+        fprintf(stderr, "WARN: Wi-Fi discovery could not start\n");
+        return std::string();
+    }
+    const bool browsed = wait_wifi_step(kStepTimeoutMs);
+    DnsServiceBrowseCancel(&browseCancel);
+    std::string instance;
+    {
+        std::lock_guard<std::mutex> lock(g_wifi.mutex);
+        instance = g_wifi.instance;
+        generation = ++g_wifi.generation;  // late browse callbacks are now ignored
+        ResetEvent(g_wifi.event);
+    }
+    if (!browsed || instance.empty()) return std::string();
+    printf("INFO: Wi-Fi discovery: found service %s; resolving its address\n", instance.c_str());
+
+    std::wstring query(instance.begin(), instance.end());
+    DNS_SERVICE_CANCEL resolveCancel{};
+    DNS_SERVICE_RESOLVE_REQUEST resolve{};
+    resolve.Version = DNS_QUERY_REQUEST_VERSION1;
+    resolve.QueryName = query.data();
+    resolve.pResolveCompletionCallback = on_wifi_resolve;
+    resolve.pQueryContext = reinterpret_cast<PVOID>(generation);
+    if (DnsServiceResolve(&resolve, &resolveCancel) != DNS_REQUEST_PENDING) {
+        fprintf(stderr, "WARN: Wi-Fi discovery could not resolve %s\n", instance.c_str());
+        return std::string();
+    }
+    const bool resolved = wait_wifi_step(kStepTimeoutMs);
+    DnsServiceResolveCancel(&resolveCancel);
+    std::string host;
+    {
+        std::lock_guard<std::mutex> lock(g_wifi.mutex);
+        host = g_wifi.host;
+        ++g_wifi.generation;
+    }
+    if (!resolved || host.empty()) {
+        fprintf(stderr, "WARN: Wi-Fi discovery: %s did not resolve to a usable IPv4 address\n", instance.c_str());
+        return std::string();
+    }
+    printf("INFO: Wi-Fi discovery found %s at %s\n", instance.c_str(), host.c_str());
+    return host;
+}
+
+static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, bool directTcp,
+                        bool wifiDiscover) {
     // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
     // transport-stream continuity counters and the OBS-facing timestamp domain.
     // This helper also guarantees the relay closes while Winsock is still live.
@@ -727,7 +863,14 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
     if (obsUdpRelay && !relay.Open(false)) return 1;
 
     while (!g_stopRequested.load()) {
-        const SOCKET fd = connect_to_device(usbNetworkHost.c_str(), directTcp);
+        // Wi-Fi mode looks the phone up on every attempt: a DHCP lease may have
+        // moved it. No result is a normal retry, never an exit (R-ENG-ERR).
+        std::string target = usbNetworkHost;
+        if (wifiDiscover) target = discover_iphone_wifi_host();
+        if (wifiDiscover && target.empty() && !g_stopRequested.load()) {
+            fprintf(stderr, "INFO: no iPhone found on Wi-Fi (is Wi-Fi mode on in the app?)\n");
+        }
+        const SOCKET fd = connect_to_device(target.c_str(), directTcp || wifiDiscover);
         if (fd != INVALID_SOCKET) {
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
             closesocket(fd);
@@ -787,40 +930,53 @@ int main(int argc, char** argv) {
     bool obsUdpRelay = true;
     const char* explicitHost = nullptr;
     const char* directHost = nullptr;
+    bool wifiDiscover = false;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--obs-udp") == 0) {
             obsUdpRelay = true;
         } else if (std::strcmp(argv[index], "--gpu-ring") == 0) {
             // Retain the old diagnostic publisher only for development.
             obsUdpRelay = false;
+        } else if (std::strcmp(argv[index], "--wifi") == 0) {
+            wifiDiscover = true;
         } else if (std::strcmp(argv[index], "--host") == 0) {
             if (index + 1 >= argc) {
-                fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--host <iPhone address>] [iPhone USB host]\n");
+                fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
                 return 2;
             }
             directHost = argv[++index];
         } else if (!explicitHost) {
             explicitHost = argv[index];
         } else {
-            fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--host <iPhone address>] [iPhone USB host]\n");
+            fprintf(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
             return 2;
         }
     }
+    // An explicit --host wins over discovery. A positional USB host is a USB
+    // setting and makes no sense together with Wi-Fi discovery.
+    if (directHost != nullptr) wifiDiscover = false;
+    if (wifiDiscover && explicitHost != nullptr) {
+        fprintf(stderr, "ERROR: --wifi cannot be combined with a USB host argument\n");
+        return 2;
+    }
     const bool directTcp = directHost != nullptr;
-    const std::string discoveredHost = directTcp ? std::string() : discover_iphone_usb_host();
+    const std::string discoveredHost = (directTcp || wifiDiscover) ? std::string() : discover_iphone_usb_host();
     const std::string usbNetworkHost = directTcp ? directHost : explicitHost ? explicitHost :
         (environmentHost && *environmentHost ? environmentHost :
          (discoveredHost.empty() ? "172.20.10.1" : discoveredHost));
     printf("INFO: iPhone Camera USB receiver build=%s\n",
            obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
-    if (directTcp) {
+    if (wifiDiscover) {
+        printf("INFO: iPhone Camera receiver started; Wi-Fi discovery (_ipcamstream._tcp) port=%u\n",
+               DEVICE_PORT);
+    } else if (directTcp) {
         printf("INFO: iPhone Camera receiver started; direct TCP host=%s port=%u\n",
                usbNetworkHost.c_str(), DEVICE_PORT);
     } else {
         printf("INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
                usbNetworkHost.c_str(), DEVICE_PORT);
     }
-    const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost, directTcp);
+    const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost, directTcp, wifiDiscover);
     WSACleanup();
     return receiverStatus;
 }
