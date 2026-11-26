@@ -15,6 +15,8 @@
 		3A0000000000000000000005 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000007 /* Assets.xcassets */; };
 		3A0000000000000000000006 /* LengthPrefixedHEVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000008 /* LengthPrefixedHEVC.swift */; };
 		3A0000000000000000000007 /* QualityAdvisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000000000000000000009 /* QualityAdvisor.swift */; };
+		3A0000000000000000000008 /* CrashReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000000000000000000000A /* CrashReportStore.swift */; };
+		3A0000000000000000000009 /* CrashReportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000000000000000000000B /* CrashReportService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +30,8 @@
 		2A0000000000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2A0000000000000000000008 /* LengthPrefixedHEVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LengthPrefixedHEVC.swift; sourceTree = "<group>"; };
 		2A0000000000000000000009 /* QualityAdvisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QualityAdvisor.swift; sourceTree = "<group>"; };
+		2A000000000000000000000A /* CrashReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashReportStore.swift; sourceTree = "<group>"; };
+		2A000000000000000000000B /* CrashReportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrashReportService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,6 +53,8 @@
 				2A0000000000000000000002 /* StreamSender.swift */,
 				2A0000000000000000000008 /* LengthPrefixedHEVC.swift */,
 				2A0000000000000000000009 /* QualityAdvisor.swift */,
+				2A000000000000000000000A /* CrashReportStore.swift */,
+				2A000000000000000000000B /* CrashReportService.swift */,
 				2A0000000000000000000003 /* StreamHeader.swift */,
 				2A0000000000000000000004 /* Info.plist */,
 				2A0000000000000000000006 /* CameraViewController.swift */,
@@ -147,6 +153,8 @@
 				3A0000000000000000000002 /* StreamSender.swift in Sources */,
 				3A0000000000000000000006 /* LengthPrefixedHEVC.swift in Sources */,
 				3A0000000000000000000007 /* QualityAdvisor.swift in Sources */,
+				3A0000000000000000000008 /* CrashReportStore.swift in Sources */,
+				3A0000000000000000000009 /* CrashReportService.swift in Sources */,
 				3A0000000000000000000003 /* StreamHeader.swift in Sources */,
 				3A0000000000000000000004 /* CameraViewController.swift in Sources */,
 			);

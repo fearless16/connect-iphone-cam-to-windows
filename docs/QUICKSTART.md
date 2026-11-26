@@ -113,6 +113,18 @@ only the USB path works.
 
 ---
 
+## Crash reports (automatic)
+
+If the app crashes, iOS (MetricKit) hands the app a crash report the next time it
+launches. The app keeps only that newest report (at most 256 KB, one small file)
+and offers it to the PC once, over USB or Wi-Fi, on a separate port (12347) that
+is open only while a report is waiting. When `receiver.exe` connects, it saves
+the report to a `crash-reports` folder next to `receiver.exe` and prints
+`iPhone crash report saved to ...`. Only then does the phone delete its copy.
+Send that file when asking for help debugging a crash. With Wi-Fi mode off, the
+report can only travel over USB. iOS can take a while to deliver a report, and
+may not deliver one at all if analytics sharing is off in iPhone Settings.
+
 ## Troubleshooting (first things to check)
 
 | Symptom | Fix |

@@ -44,6 +44,11 @@ g++ -std=c++20 -O2 \
   -o build/wifi_discovery_test.exe
 ./build/wifi_discovery_test.exe
 g++ -std=c++20 -O2 \
+  -I"$root/windows" \
+  "$root/tests/crash_report_test.cpp" \
+  -o build/crash_report_test.exe
+./build/crash_report_test.exe
+g++ -std=c++20 -O2 \
   -I"$root/protocol" \
   "$root/windows/receiver.cpp" \
   "$root/windows/gpu_frame_publisher.cpp" \

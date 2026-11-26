@@ -100,6 +100,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // Leave it off for live streaming; enable only while diagnosing encoding.
     private let saveEncodedStream = false
     private let sender = StreamSender()
+    // T6.1: hands the previous run's crash report to the PC once. Off the video path.
+    private let crashReports = CrashReportService()
     private var frameNumber: UInt32 = 0
     private var encodedFrameNumber: UInt32 = 0
     private let protocolTimestampLock = NSLock()
@@ -366,6 +368,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         // stored choice must reach the sender before it starts listening.
         sender.setWiFiEnabled(Self.isWiFiEnabledStored)
         sender.start()   // Step 5: begin listening for the Windows receiver
+        crashReports.setWiFiEnabled(Self.isWiFiEnabledStored)
+        crashReports.start()
         startLivenessWatchdog()
         frameStartUptime = ProcessInfo.processInfo.systemUptime
         publishDiagnostics()
@@ -661,6 +665,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func setWiFiEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.wifiPreferenceKey)
         sender.setWiFiEnabled(enabled)
+        crashReports.setWiFiEnabled(enabled)
     }
 
     private static func wifiHealthText(_ address: String?, enabled: Bool) -> String {
@@ -1363,6 +1368,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self.setIdleTimerDisabled(false)
             self.invalidateEncoder(reason: nil)
             self.sender.stop()
+            self.crashReports.stop()
             try? self.outputFile?.close()
             self.outputFile = nil
         }

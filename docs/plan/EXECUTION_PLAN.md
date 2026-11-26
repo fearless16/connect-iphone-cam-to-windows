@@ -1328,6 +1328,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.10 | feat/ios-portrait-effect | S | T5.4, DC-4 | G12 | TODO | | Portrait only; never 4K |
 | T5.11 | docs/wifi-presets-effects | H | T5.0–T5.10, T3.3 | — | TODO | | deps may be SKIPPED |
 | DC-6 | (owner) | — | T5.11 | — | TODO | | |
+| T6.1 | feat/crash-report-side-channel | S | T3.3 | owner delegated transport choice (2026-11-26) | DONE-PENDING-MERGE | 2026-11-26 | Not merged, CI not run. Mini-plan: docs/plan/T6.1-crash-report.md. Receiver fetch verified end to end against a fake phone (valid, bad magic, absurd length) and links locally. UNVERIFIED: all Swift (not compiled; MetricKit delivery on a TrollStore/unsigned install; AC device) |
 
 ---
 

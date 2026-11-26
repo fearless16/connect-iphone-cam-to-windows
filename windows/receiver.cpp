@@ -21,6 +21,7 @@
 #include <windows.h>
 #include <windns.h>
 
+#include "crash_report.h"
 #include "gpu_frame_publisher.h"
 #include "hevc_access_unit.h"
 #include "hevc_sps.h"
@@ -323,12 +324,12 @@ static bool finish_nonblocking_connect(SOCKET socket) {
                       reinterpret_cast<char*>(&soError), &soErrorSize) == 0 && soError == 0;
 }
 
-static SOCKET connect_tcp(const char* host, bool requireUsbInterface) {
+static SOCKET connect_tcp(const char* host, bool requireUsbInterface, unsigned portNumber = DEVICE_PORT) {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     char port[6]{};
-    std::snprintf(port, sizeof(port), "%u", DEVICE_PORT);
+    std::snprintf(port, sizeof(port), "%u", portNumber);
     addrinfo* results = nullptr;
     if (getaddrinfo(host, port, &hints, &results) != 0) return INVALID_SOCKET;
     SOCKET socket = INVALID_SOCKET;
@@ -854,6 +855,84 @@ static std::string discover_iphone_wifi_host() {
     return host;
 }
 
+// T6.1: after a session starts, ask the phone for a pending crash report once.
+// The phone listens on a separate port only while it holds an undelivered
+// report, so normally this is one refused connection. It runs on its own short
+// thread with bounded timeouts and never touches the video path.
+static std::atomic<bool> g_crashFetchBusy{false};
+
+static SOCKET connect_crash_port(const std::string& host, bool directTcp) {
+    const unsigned port = crash_report::kPort;
+    if (directTcp) {
+        return host.empty() ? INVALID_SOCKET : connect_tcp(host.c_str(), false, port);
+    }
+    usbmuxd_device_info_t* list = nullptr;
+    const int count = usbmuxd_get_device_list(&list);
+    int handle = -1;
+    for (int index = 0; index < count; ++index) {
+        if (list[index].conn_type == CONNECTION_TYPE_USB) {
+            handle = static_cast<int>(list[index].handle);
+            break;
+        }
+    }
+    if (list != nullptr) usbmuxd_device_list_free(&list);
+    if (handle >= 0) {
+        const int fd = usbmuxd_connect(handle, port);
+        if (fd >= 0) return static_cast<SOCKET>(fd);
+    }
+    return connect_tcp(host.c_str(), true, port);  // Personal Hotspot fallback
+}
+
+static std::string crash_report_directory() {
+    char path[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string directory(path, length < MAX_PATH ? length : 0);
+    const size_t slash = directory.find_last_of("\\/");
+    directory = slash == std::string::npos ? std::string(".") : directory.substr(0, slash);
+    return directory + "\\crash-reports";
+}
+
+static void fetch_crash_report(std::string host, bool directTcp) {
+    const SOCKET fd = connect_crash_port(host, directTcp);
+    if (fd != INVALID_SOCKET) {
+        uint8_t header[crash_report::kHeaderSize];
+        const bool gotHeader = read_exact(fd, header, sizeof(header), "crash report header", 5'000);
+        const auto length = gotHeader ? crash_report::ParseHeader(header) : std::nullopt;
+        if (gotHeader && !length) {
+            fprintf(stderr, "WARN: ignoring an invalid crash report header from the phone\n");
+        } else if (length) {
+            std::vector<uint8_t> payload(*length);
+            if (read_exact(fd, payload.data(), payload.size(), "crash report", 10'000)) {
+                const std::string directory = crash_report_directory();
+                CreateDirectoryA(directory.c_str(), nullptr);  // fine if it already exists
+                SYSTEMTIME now{};
+                GetLocalTime(&now);
+                const std::string path = directory + "\\" +
+                    crash_report::FileName(now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+                FILE* file = std::fopen(path.c_str(), "wb");
+                const bool saved = file != nullptr &&
+                    std::fwrite(payload.data(), 1, payload.size(), file) == payload.size();
+                if (file != nullptr) std::fclose(file);
+                if (saved) {
+                    const char ack = static_cast<char>(crash_report::kAck);
+                    send(fd, &ack, 1, 0);  // only now may the phone delete its copy
+                    printf("INFO: iPhone crash report saved to %s (%zu bytes)\n", path.c_str(), payload.size());
+                } else {
+                    fprintf(stderr, "WARN: could not save the iPhone crash report to %s\n", path.c_str());
+                }
+            }
+        }
+        closesocket(fd);
+    }
+    g_crashFetchBusy.store(false);
+}
+
+static void start_crash_report_fetch(const std::string& host, bool directTcp) {
+    bool expected = false;
+    if (!g_crashFetchBusy.compare_exchange_strong(expected, true)) return;
+    std::thread(fetch_crash_report, host, directTcp).detach();
+}
+
 static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, bool directTcp,
                         bool wifiDiscover) {
     // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
@@ -872,6 +951,7 @@ static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, boo
         }
         const SOCKET fd = connect_to_device(target.c_str(), directTcp || wifiDiscover);
         if (fd != INVALID_SOCKET) {
+            start_crash_report_fetch(target, directTcp || wifiDiscover);
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
             closesocket(fd);
             if (g_stopRequested.load()) break;
