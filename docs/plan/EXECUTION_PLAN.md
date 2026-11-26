@@ -1309,7 +1309,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | TODO | | |
 | T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Swift not compiled. Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
 | T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | SKIPPED | 2026-11-25 | superseded by T5.4 + T5.8 |
-| T3.3 | feat/wifi-discovery | O | T3.1 | G7 | DONE-PENDING-MERGE | 2026-11-26 | Mini-plan: docs/plan/T3.3-wifi-discovery.md. receiver links locally (MSYS2 g++), wifi_discovery_test passes; Bonjour browse verified against a local mDNS registration. UNVERIFIED: address resolve (this PC does not answer queries for its own registration) and the Swift change; AC4 CI, AC5 device |
+| T3.3 | feat/wifi-discovery | O | T3.1 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Mini-plan: docs/plan/T3.3-wifi-discovery.md. receiver links locally (MSYS2 g++), wifi_discovery_test passes; Bonjour browse verified against a local mDNS registration. UNVERIFIED: address resolve (this PC does not answer queries for its own registration) and the Swift change; AC4 CI, AC5 device |
 | DC-3 | (owner) | — | T3.1 | — | TODO | | T3.2 SKIPPED |
 | T4.1 | chore/retire-gpu-ring | S | T0.6 | G9 | TODO | | optional |
 | T4.2 | docs/soak-signoff | H | soak | — | TODO | | |
