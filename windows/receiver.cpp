@@ -143,7 +143,7 @@ public:
                            const HevcAccessUnitInfo& accessUnit) {
         bool reopenedForThisWrite = false;
         // The stream size can change between sessions (quality presets). Re-read
-        // it from the SPS only at join points (about every 2 s): no allocation,
+        // it from the SPS only at join points (about every 1 s, G3): no allocation,
         // and a log line only when the size actually changes.
         if (accessUnit.IsDecoderJoinPoint()) {
             int w = 0;

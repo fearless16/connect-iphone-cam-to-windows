@@ -170,7 +170,10 @@ fi
 # T5.4: the bit rate follows the transport the PC connected over.
 grep -q 'sender.onClientTransport' "$source"
 grep -q 'DataRateLimits, value: rateLimit' "$source"
-grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 120)' "$source"
+# G3: 1 s keyframe interval halves recovery/OBS join time
+grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 60)' "$source"
+grep -q 'MaxKeyFrameIntervalDuration, value: NSNumber(value: 1)' "$source"
+grep -q 'PrioritizeEncodingSpeedOverQuality' "$source"
 grep -q 'setIdleTimerDisabled(true)' "$source"
 grep -q 'setIdleTimerDisabled(false)' "$source"
 grep -q 'isIdleTimerDisabled' "$source"

@@ -697,7 +697,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             ("bitrate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: target))),
             ("rate limit", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_DataRateLimits, value: rateLimit)),
             ("frame rate", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: currentPreset().frameRate))),
-            ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 120))),
+            // G3: a keyframe every second halves the worst-case recovery and
+            // OBS join time. The duration cap also holds for 30 fps presets.
+            ("keyframe interval", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: 60))),
+            ("keyframe duration", VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 1))),
         ]
         if let failed = propertyStatuses.first(where: { $0.1 != noErr }) {
             VTCompressionSessionInvalidate(enc)
@@ -705,6 +708,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             report("HEVC encoder setting failed (\(failed.0)): \(failed.1)")
             scheduleRecovery(reason: "HEVC encoder setup recovery")
             return
+        }
+        // Optional hint: lower encode latency at a small quality cost. Some
+        // encoders don't support it, so a failure must not fail setup.
+        let speedStatus = VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                                               value: kCFBooleanTrue)
+        if speedStatus != noErr {
+            Self.log.notice("HEVC encoder ignored PrioritizeEncodingSpeedOverQuality: \(speedStatus)")
         }
 
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(enc)
