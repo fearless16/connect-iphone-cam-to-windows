@@ -89,6 +89,10 @@ So install Apple Devices and keep Personal Hotspot as a backup, not the first ch
 ## PART C — Run
 
 - Phone must be plugged into the Windows PC via USB, with the app open in the foreground (the screen stays awake by design).
+- The phone encodes video only while `receiver.exe` is connected. Until then the
+  preview stays live, the status shows `HEVC paused` and the HEVC rate is 0, which
+  keeps the phone cooler. Video starts on a keyframe within about a second of the
+  receiver connecting.
 - Start the OBS Media Source before `receiver.exe`; relay-write errors are
   counted as `relayDrop` and do not end the iPhone connection.
 

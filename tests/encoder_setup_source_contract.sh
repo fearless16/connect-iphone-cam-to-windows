@@ -175,6 +175,12 @@ grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 60)' "$source"
 grep -q 'MaxKeyFrameIntervalDuration, value: NSNumber(value: 1)' "$source"
 grep -q 'PrioritizeEncodingSpeedOverQuality' "$source"
 grep -q 'setIdleTimerDisabled(true)' "$source"
+# G4: encode only while a PC receiver is connected; the preview stays live,
+# and resuming forces an IDR.
+grep -q 'private var receiverWantsVideo = false' "$source"
+grep -q 'guard receiverWantsVideoNow() else { return }' "$source"
+grep -q 'setReceiverWantsVideo(state == .connected || state == .sending)' "$source"
+grep -q 'if changed && wanted { forceNextKeyFrame = true }' "$source"
 grep -q 'setIdleTimerDisabled(false)' "$source"
 grep -q 'isIdleTimerDisabled' "$source"
 grep -q 'thermalStateDidChangeNotification' "$source"

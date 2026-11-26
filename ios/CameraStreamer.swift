@@ -77,6 +77,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     // T5.8: the adapted target while the link is struggling; nil means the full
     // preset rate. Protected by encoderStateLock.
     private var liveBitRate: Int?
+    // G4: HEVC runs only while a PC receiver is connected; the preview stays
+    // live. Less heat and battery over a long session. Protected by
+    // encoderStateLock; set from the sender's connection callback.
+    private var receiverWantsVideo = false
     // T5.8: link-window state. Accessed only on sessionQueue. The window's drops
     // and queue wait arrive with each StreamSender.LinkStats reading.
     private var bitrateController = BitrateController()
@@ -341,6 +345,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             self?.report(message)
         }
         sender.onConnectionState = { [weak self] state in
+            // Before the sessionQueue hop, so the next camera frame already sees it.
+            self?.setReceiverWantsVideo(state == .connected || state == .sending)
             self?.sessionQueue.async { [weak self] in
                 guard let self, self.isConfigured, !self.stopped else { return }
                 self.updateUSBHealth(state)
@@ -384,7 +390,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         publishDiagnostics()
         publishOutputOrientation(initialOrientation)
         updateStreamHealth(camera: "CAMERA running • waiting for first frame",
-                           usb: "USB waiting for Windows receiver",
+                           usb: "USB waiting for Windows receiver • HEVC paused",
                            event: "Camera started • screen kept awake")
         report("Camera active • screen kept awake • waiting for PC")
         publishPresetAvailability(for: device)
@@ -749,6 +755,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         recordSensorFrame(pts)
+        // G4: no PC, no encoding. Capture liveness above still counts frames.
+        guard receiverWantsVideoNow() else { return }
         if encoderNeedsRebuild(width: width, height: height) {
             invalidateEncoder(reason: nil)
         }
@@ -1163,15 +1171,15 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         healthLock.unlock()
         switch state {
         case .waiting:
-            updateStreamHealth(usb: "USB waiting for Windows receiver")
+            updateStreamHealth(usb: "USB waiting for Windows receiver • HEVC paused")
         case .connected:
             updateStreamHealth(usb: "PC receiver connected • waiting for first video frame")
         case .sending:
             updateStreamHealth(usb: "USB connected • PC receiver receiving video")
         case .disconnected:
-            updateStreamHealth(usb: "PC receiver disconnected • waiting for receiver")
+            updateStreamHealth(usb: "PC receiver disconnected • waiting for receiver • HEVC paused")
         case .failed:
-            updateStreamHealth(usb: "USB connection error • reconnecting")
+            updateStreamHealth(usb: "USB connection error • reconnecting • HEVC paused")
         }
     }
 
@@ -1364,6 +1372,30 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = disabled
         }
+    }
+
+    private func setReceiverWantsVideo(_ wanted: Bool) {
+        encoderStateLock.lock()
+        let changed = receiverWantsVideo != wanted
+        receiverWantsVideo = wanted
+        // The encoder may have idled for minutes: resume on an IDR.
+        if changed && wanted { forceNextKeyFrame = true }
+        encoderStateLock.unlock()
+        guard changed else { return }
+        // HEVC fps is an average since the first encoded frame; restart it so
+        // a pause does not show up as a low rate after resuming.
+        telemetryLock.lock()
+        encoderFirstPTS = .invalid
+        encoderFrameCount = 0
+        encoderFPS = 0
+        telemetryLock.unlock()
+        publishDiagnostics()
+    }
+
+    private func receiverWantsVideoNow() -> Bool {
+        encoderStateLock.lock()
+        defer { encoderStateLock.unlock() }
+        return receiverWantsVideo
     }
 
     private func requestKeyFrame() {
