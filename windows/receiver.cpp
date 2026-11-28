@@ -465,8 +465,10 @@ private:
         // Wait for room only while OBS reads; a stalled OBS costs nothing.
         const int64_t waitUs = tcp_flow_.Stalled() ? 0 : kTcpSendWaitUs;
         if (!tcp_endpoint_.Flush(tcp_queue_, waitUs)) {
+            // Flush closed the client: frames now drop before muxing until
+            // Poll accepts a new one, which resets the muxer.
             tcp_queue_.Clear();
-            return;  // the next frame's Poll sees the client gone
+            return;
         }
         if (tcp_queue_.Size() > kMaxTcpQueueBytes) {
             log_line(stderr, "WARN: OBS TCP queue over %zu bytes; dropping the client\n", kMaxTcpQueueBytes);
@@ -542,8 +544,8 @@ private:
     AVPacket* out_packet_ = nullptr;
     std::chrono::steady_clock::time_point next_write_error_log_{};
     std::chrono::steady_clock::time_point next_reopen_attempt_{};
-    // T2.6 TCP sink. Declared last: Close() in the destructor body writes the
-    // trailer into tcp_queue_, which must still exist.
+    // T2.6 TCP sink. Close() in the destructor writes the trailer into
+    // tcp_queue_; members outlive the destructor body, so that is safe.
     bool tcp_ = false;
     ObsTcpSendQueue tcp_queue_{};
     ObsTcpFlowControl tcp_flow_{};

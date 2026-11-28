@@ -220,7 +220,7 @@ jobs:
             "${{ github.workspace }}/tests/crash_report_test.cpp" \
             -o crash_report_test.exe
           ./crash_report_test.exe
-          g++ -std=c++20 -O2             -I"${{ github.workspace }}/windows"             "${{ github.workspace }}/tests/obs_tcp_flow_test.cpp"             -o obs_tcp_flow_test.exe
+          g++ -std=c++20 -O2 \n            -I"${{ github.workspace }}/windows" \n            "${{ github.workspace }}/tests/obs_tcp_flow_test.cpp" \n            -o obs_tcp_flow_test.exe
           ./obs_tcp_flow_test.exe
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \

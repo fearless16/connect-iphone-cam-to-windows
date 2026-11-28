@@ -57,7 +57,7 @@ g++ -std=c++20 -O2 \
   "$root/tests/crash_report_test.cpp" \
   -o build/crash_report_test.exe
 ./build/crash_report_test.exe
-g++ -std=c++20 -O2   -I"$root/windows"   "$root/tests/obs_tcp_flow_test.cpp"   -o build/obs_tcp_flow_test.exe
+g++ -std=c++20 -O2 \n  -I"$root/windows" \n  "$root/tests/obs_tcp_flow_test.cpp" \n  -o build/obs_tcp_flow_test.exe
 ./build/obs_tcp_flow_test.exe
 g++ -std=c++20 -O2 \
   -I"$root/protocol" \
