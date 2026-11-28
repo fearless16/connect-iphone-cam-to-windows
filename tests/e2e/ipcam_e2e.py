@@ -942,9 +942,16 @@ def tcp_paused_check(ctx, summary):
                    if "OBS stopped reading" in l or "OBS reading again" in l]
     summary["stalls"] = sum("OBS stopped reading" in l for l in relay_lines)
     summary["resumes"] = sum("OBS reading again" in l for l in relay_lines)
+    stalls, relay = summary["stalls"], " | ".join(relay_lines)
+    # Some Windows TCP stacks (the CI runner's) take more bytes partway through
+    # the pause while nobody reads, so the relay may resume early, write one
+    # join AU into the socket buffers, and stall again. That costs at most what
+    # the buffers hold, so allow a few drop runs, each a gap of at most one per PID.
+    check(1 <= stalls <= 3 and summary["resumes"] == stalls,
+          "one to three drop runs over the pause, each resumed", relay)
     cc, pids = ctx["ts"]["cc_errors"], ctx["ts"]["pids"]
-    check(cc <= pids, "at most one continuity gap per PID across the dropped frames",
-          "%d gaps, %d PIDs; relay: %s" % (cc, pids, " | ".join(relay_lines)))
+    check(cc <= pids * stalls, "at most one continuity gap per PID per drop run",
+          "%d gaps, %d PIDs; relay: %s" % (cc, pids, relay))
     check("OBS stopped reading" in ctx["log"], "receiver noticed OBS stopped reading")
     check("OBS reading again" in ctx["log"], "receiver resumed when OBS read again")
     resumed_ns = ctx["sink"].resumed_ns

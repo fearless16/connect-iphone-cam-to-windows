@@ -67,7 +67,10 @@ public:
     // Drops every whole frame after the oldest unsent one. That one stays, even
     // if none of it has gone out yet: the queue then empties only when OBS
     // actually takes data, which is how the relay knows OBS reads again.
-    // Returns the bytes dropped.
+    // Some TCP stacks accept more bytes into socket buffers partway through a
+    // pause (seen on the Windows Server CI runner). The relay then resumes
+    // early, writes one join AU nobody reads yet, and stalls again; the stale
+    // data is bounded by the socket buffers. Returns the bytes dropped.
     size_t DropUnsentFrames() {
         if (Size() == 0) return 0;
         const size_t keepIndex = OldestUnsentIndex();
