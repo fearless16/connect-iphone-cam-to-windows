@@ -43,7 +43,7 @@ workflow below.
 | `ios/CrashReportStore.swift` | Crash-report framing and one-file store (pure) | Foundation | Supported |
 | `ios/CrashReportService.swift` | MetricKit crash capture; serves the report once on port 12347 (never the video path) | `CrashReportStore`, MetricKit, Network | Supported |
 | `windows/receiver.cpp` | USB host discovery, TCP, header validation, OBS relay, crash-report fetch, `--gpu-ring` diagnostics | protocol, `relay_*.h`, `hevc_access_unit.h`, FFmpeg, usbmuxd, Winsock | Supported |
-| `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h`, `wifi_discovery.h`, `crash_report.h` | Pure relay logic (clock, recovery gate, join-point detection, arrival timing stats, Bonjour result validation, crash-report header parsing) | C++ std only | Supported |
+| `windows/relay_timestamp.h`, `relay_recovery.h`, `hevc_access_unit.h`, `hevc_sps.h`, `stream_timing.h`, `wifi_discovery.h`, `crash_report.h`, `obs_tcp_flow.h` | Pure relay logic (clock, recovery gate, join-point detection, arrival timing stats, Bonjour result validation, crash-report header parsing, OBS TCP send queue and flow control) | C++ std only | Supported |
 | `windows/gpu_frame_publisher.*` | D3D11 GPU ring producer (`--gpu-ring` only) | `mf_virtual_camera/gpu_frame_transport.h` (D1) | Diagnostics |
 | `windows/virtual_camera.cpp`, `directshow_compat*.h`, `frame_store.h`, `iphonecamera.def`, `windows/mf_virtual_camera/` | DirectShow / Media Foundation virtual camera | — | **Archived: do not build or extend** |
 | `third_party/VCamSample/` | Vendored reference sample | — | **Never edit** |

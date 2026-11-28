@@ -1,8 +1,9 @@
 // receiver.exe: finds the iPhone (usbmux over USB, Personal Hotspot fallback,
 // --host direct TCP, or --wifi Bonjour discovery), validates every protocol
 // packet, gates on HEVC decoder-join points, and relays the still-compressed
-// stream to OBS as MPEG-TS on udp://127.0.0.1:12346. --gpu-ring is the old
-// D3D11 decode diagnostic.
+// stream to OBS as MPEG-TS on udp://127.0.0.1:12346, or with --obs-tcp on
+// tcp://127.0.0.1:12346 (T2.6: drops frames instead of queueing them when OBS
+// stops reading). --gpu-ring is the old D3D11 decode diagnostic.
 // Build: scripts/build_receiver_msys2.sh (mirrors the CI windows job).
 
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include "gpu_frame_publisher.h"
 #include "hevc_access_unit.h"
 #include "hevc_sps.h"
+#include "obs_tcp_flow.h"
 #include "relay_recovery.h"
 #include "relay_timestamp.h"
 #include "stream_timing.h"
@@ -92,12 +94,169 @@ struct DecodeTelemetry {
 // decoder-join AU after a failure) and are counted apart from real failures.
 enum class RelayWriteResult { Written, GateDrop, Failed };
 
+// T2.6 (G6): the loopback TCP endpoint OBS connects to (--obs-tcp, Media Source
+// input tcp://127.0.0.1:12346). It binds 127.0.0.1 only (R-ENG-SEC), serves one
+// client (a new connection replaces the old one: that is OBS reconnecting), and
+// never blocks the receive loop.
+class ObsTcpEndpoint final {
+public:
+    static constexpr u_short kPort = 12346;
+    // Small on purpose: whatever sits in socket buffers when OBS stops reading
+    // reaches OBS late. While OBS reads, a 1.5 MB keyframe still passes in
+    // about 2 ms on loopback (e2e tcp_steady).
+    static constexpr int kSendBufferBytes = 64 * 1024;
+
+    ObsTcpEndpoint() = default;
+    ObsTcpEndpoint(const ObsTcpEndpoint&) = delete;  // owns sockets
+    ObsTcpEndpoint& operator=(const ObsTcpEndpoint&) = delete;
+    ~ObsTcpEndpoint() {
+        Disconnect();
+        if (listener_ != INVALID_SOCKET) closesocket(listener_);
+    }
+
+    // Accepts a waiting OBS connection and notices a closed one. Returns true
+    // when the attached client changed (connected, replaced, or gone).
+    bool Poll() {
+        if (listener_ == INVALID_SOCKET && !Listen()) return false;
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(listener_, &readable);
+        if (client_ != INVALID_SOCKET) FD_SET(client_, &readable);
+        timeval zero{0, 0};
+        if (select(0, &readable, nullptr, nullptr, &zero) <= 0) return false;
+        bool changed = false;
+        // OBS never sends: a readable client socket means it closed or reset.
+        if (client_ != INVALID_SOCKET && FD_ISSET(client_, &readable)) {
+            char scratch[512];
+            const int got = recv(client_, scratch, sizeof(scratch), 0);
+            if (got == 0 || (got == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK)) {
+                log_line(stdout, "INFO: OBS disconnected from tcp://127.0.0.1:%u\n", kPort);
+                Disconnect();
+                changed = true;
+            }
+        }
+        if (FD_ISSET(listener_, &readable)) {
+            const SOCKET accepted = accept(listener_, nullptr, nullptr);
+            if (accepted != INVALID_SOCKET) {
+                u_long nonBlocking = 1;
+                ioctlsocket(accepted, FIONBIO, &nonBlocking);
+                const BOOL noDelay = TRUE;
+                setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY,
+                           reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+                setsockopt(accepted, SOL_SOCKET, SO_SNDBUF,
+                           reinterpret_cast<const char*>(&kSendBufferBytes), sizeof(kSendBufferBytes));
+                if (client_ != INVALID_SOCKET) Disconnect();
+                client_ = accepted;
+                log_line(stdout, "INFO: OBS connected to tcp://127.0.0.1:%u; starting at the next HEVC keyframe\n",
+                         kPort);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    bool Connected() const { return client_ != INVALID_SOCKET; }
+
+    // Listens before the first frame, so OBS can connect while the phone is
+    // not streaming yet. Retried by Poll() if it fails.
+    void EnsureListening() {
+        if (listener_ == INVALID_SOCKET) Listen();
+    }
+
+    // Sends what the socket takes, waiting up to `waitUs` for room. Windows
+    // buffers only ~0.3 MB on loopback, so a 1-2 MB 4K keyframe needs OBS to
+    // read while it is sent; the short wait covers OBS being mid-decode. The
+    // rest goes out on the next frame. Returns false if the client failed; it
+    // is then closed.
+    bool Flush(ObsTcpSendQueue& queue, int64_t waitUs = 0) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(waitUs);
+        while (client_ != INVALID_SOCKET && queue.Size() > 0) {
+            const size_t chunk = std::min<size_t>(queue.Size(), 1u << 20);
+            const int sent = send(client_, reinterpret_cast<const char*>(queue.Data()),
+                                  static_cast<int>(chunk), 0);
+            if (sent > 0) {
+                queue.Consume(static_cast<size_t>(sent));
+                continue;
+            }
+            if (sent == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+                const auto left = std::chrono::duration_cast<std::chrono::microseconds>(
+                    deadline - std::chrono::steady_clock::now()).count();
+                if (left <= 0) return true;
+                fd_set writable;
+                FD_ZERO(&writable);
+                FD_SET(client_, &writable);
+                timeval timeout{0, static_cast<long>(left)};
+                if (select(0, nullptr, &writable, nullptr, &timeout) <= 0) return true;
+                continue;
+            }
+            log_line(stdout, "INFO: OBS connection lost (send error %d)\n", WSAGetLastError());
+            Disconnect();
+            return false;
+        }
+        return true;
+    }
+
+    void Disconnect() {
+        if (client_ == INVALID_SOCKET) return;
+        closesocket(client_);
+        client_ = INVALID_SOCKET;
+    }
+
+private:
+    // Retried at most once a second on failure (port in use): the receiver
+    // keeps streaming and never exits over OBS (R-ENG-ERR).
+    bool Listen() {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < next_listen_attempt_) return false;
+        next_listen_attempt_ = now + std::chrono::seconds(1);
+        const SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (listener == INVALID_SOCKET) return false;
+        // Another process may not take the port over while we listen.
+        const BOOL exclusive = TRUE;
+        setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                   reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(kPort);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        u_long nonBlocking = 1;
+        if (bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+            listen(listener, 1) != 0 || ioctlsocket(listener, FIONBIO, &nonBlocking) != 0) {
+            const bool first = !reported_listen_failure_;
+            reported_listen_failure_ = true;
+            if (first) {
+                log_line(stderr, "ERROR: cannot listen on tcp://127.0.0.1:%u (error %d); retrying every second\n",
+                         kPort, WSAGetLastError());
+            }
+            closesocket(listener);
+            return false;
+        }
+        listener_ = listener;
+        reported_listen_failure_ = false;
+        log_line(stdout, "INFO: OBS relay listening; Media Source input=tcp://127.0.0.1:%u format=mpegts\n",
+                 kPort);
+        return true;
+    }
+
+    SOCKET listener_ = INVALID_SOCKET;
+    SOCKET client_ = INVALID_SOCKET;
+    bool reported_listen_failure_ = false;
+    std::chrono::steady_clock::time_point next_listen_attempt_{};
+};
+
 // OBS Media Source officially accepts MPEG-TS over UDP.  This relay keeps
 // iPhone HEVC compressed until it reaches OBS; no frame is mapped or copied on
 // the CPU.  OBS owns the hardware decode on the selected Radeon adapter.
+// UseTcp() switches the sink to ObsTcpEndpoint (T2.6, --obs-tcp).
 class ObsUdpRelay final {
 public:
     static constexpr const char* kUrl = "udp://127.0.0.1:12346?pkt_size=1316";
+    // The flow control keeps the TCP queue to about one keyframe plus 100 ms.
+    // This cap only guards memory if that ever fails; the client is dropped.
+    static constexpr size_t kMaxTcpQueueBytes = 16u * 1024u * 1024u;
+    static constexpr int kTcpIoBufferBytes = 64 * 1024;
+    // Bounded: the phone receive loop runs on this thread (16.7 ms per frame).
+    static constexpr int64_t kTcpSendWaitUs = 4'000;
 
     ObsUdpRelay() = default;
     ObsUdpRelay(const ObsUdpRelay&) = delete;             // owns FFmpeg contexts
@@ -115,11 +274,15 @@ public:
         next_reopen_attempt_ = std::chrono::steady_clock::now();
     }
 
+    // T2.6: write MPEG-TS to the OBS TCP client instead of UDP. Call before Open.
+    void UseTcp() { tcp_ = true; }
+    bool IsTcp() const { return tcp_; }
+
     bool Open(bool isRecovery) {
         // Every open starts from a fully released FFmpeg context. This also
         // makes a failed recovery attempt safe to retry on a later IDR.
         Close(false);
-        int status = avformat_alloc_output_context2(&context_, nullptr, "mpegts", kUrl);
+        int status = avformat_alloc_output_context2(&context_, nullptr, "mpegts", tcp_ ? nullptr : kUrl);
         if (status < 0 || !context_) return Report("avformat_alloc_output_context2", status);
         stream_ = avformat_new_stream(context_, nullptr);
         if (!stream_) {
@@ -140,7 +303,8 @@ public:
         if (isRecovery) {
             av_dict_set(&options, "mpegts_flags", "+initial_discontinuity", 0);
         }
-        status = avio_open2(&context_->pb, kUrl, AVIO_FLAG_WRITE, nullptr, nullptr);
+        if (tcp_) tcp_endpoint_.EnsureListening();
+        status = tcp_ ? OpenTcpIo() : avio_open2(&context_->pb, kUrl, AVIO_FLAG_WRITE, nullptr, nullptr);
         if (status < 0) {
             av_dict_free(&options);
             const bool reported = Report("avio_open2", status);
@@ -156,8 +320,10 @@ public:
         }
         header_written_ = true;
         muxer_time_base_ = stream_->time_base;
-        log_line(stdout, "INFO: OBS relay ready; Media Source input=%s format=mpegts tb=%d/%d\n",
-               kUrl, muxer_time_base_.num, muxer_time_base_.den);
+        if (!tcp_) {
+            log_line(stdout, "INFO: OBS relay ready; Media Source input=%s format=mpegts tb=%d/%d\n",
+                   kUrl, muxer_time_base_.num, muxer_time_base_.den);
+        }
         return true;
     }
 
@@ -165,6 +331,9 @@ public:
     // sets the OBS timeline (G5). The phone timestamp is only diagnostics.
     RelayWriteResult Write(const AVPacket& source, uint64_t arrivalUs,
                            const HevcAccessUnitInfo& accessUnit) {
+        if (tcp_ && !AdmitTcpFrame(arrivalUs, accessUnit.IsDecoderJoinPoint())) {
+            return RelayWriteResult::GateDrop;
+        }
         bool reopenedForThisWrite = false;
         // The stream size can change between sessions (quality presets). Re-read
         // it from the SPS only at join points (about every 1 s, G3): no allocation,
@@ -201,7 +370,9 @@ public:
             reopenedForThisWrite = true;
         }
         if (!context_ || !stream_) return RelayWriteResult::Failed;
-        const uint64_t relativeUs = arrival_clock_.Stamp(arrivalUs);
+        uint64_t relativeUs = arrival_clock_.Stamp(arrivalUs);
+        // TCP: no forward jump over frames dropped while OBS was not reading.
+        if (tcp_) relativeUs = tcp_flow_.MapTimelineUs(relativeUs, kNominalFrameDurationUs);
         // One packet reused for every write: av_interleaved_write_frame takes
         // the reference and leaves the packet blank, so nothing is allocated per frame.
         if (!out_packet_) out_packet_ = av_packet_alloc();
@@ -225,6 +396,7 @@ public:
         if (accessUnit.hasIdr) packet->flags |= AV_PKT_FLAG_KEY;
         const int status = av_interleaved_write_frame(context_, packet);
         av_packet_unref(packet);
+        if (tcp_) SendTcp();  // now, not on the next frame: every ms is latency
         if (status >= 0) {
             recovery_gate_.OnWriteSuccess();
             if (reopenedForThisWrite) {
@@ -251,6 +423,77 @@ public:
     }
 
 private:
+    // T2.6: decides, before muxing, whether this AU goes to the OBS TCP client.
+    // A new client gets a fresh muxer (PAT/PMT first) at the next join point.
+    // When OBS stops reading, queued frames are dropped instead of delivered
+    // late, and the relay resumes on a join point once OBS reads again.
+    bool AdmitTcpFrame(uint64_t arrivalUs, bool joinPoint) {
+        // Reset before flushing: bytes muxed for an earlier client (or before
+        // any client) end mid-stream and must never reach a new one.
+        if (tcp_endpoint_.Poll()) ResetTcpClient();
+        if (tcp_endpoint_.Connected() && !tcp_endpoint_.Flush(tcp_queue_)) ResetTcpClient();
+        const bool backlogged = tcp_queue_.IsBacklogged(arrivalUs, ObsTcpFlowControl::kMaxBacklogUs);
+        const bool wasStalled = tcp_flow_.Stalled();
+        const uint64_t droppedBefore = tcp_flow_.DroppedFrames();
+        const ObsTcpAction action = tcp_flow_.OnFrame(tcp_endpoint_.Connected(), backlogged, joinPoint);
+        if (backlogged) tcp_queue_.DropUnsentFrames();
+        if (!wasStalled && tcp_flow_.Stalled()) {
+            stall_dropped_base_ = droppedBefore;
+            log_line(stderr, "WARN: OBS stopped reading (source hidden or busy); dropping frames "
+                             "instead of queueing them\n");
+        } else if (wasStalled && !tcp_flow_.Stalled() && action == ObsTcpAction::Write) {
+            log_line(stdout, "INFO: OBS reading again; resumed live at an HEVC keyframe after %llu dropped frames\n",
+                     static_cast<unsigned long long>(tcp_flow_.DroppedFrames() - stall_dropped_base_));
+        }
+        if (action == ObsTcpAction::Drop) return false;
+        tcp_queue_.BeginFrame(arrivalUs);
+        return true;
+    }
+
+    // The client attached, changed, or failed: the next written AU is a join
+    // point muxed by a fresh muxer, so the client starts with PAT/PMT.
+    void ResetTcpClient() {
+        Close(false);
+        tcp_queue_.Clear();  // after Close: its flush lands in the queue
+        tcp_flow_.OnClientChanged();
+        // The recovery gate reopens the muxer on the next join point.
+        recovery_gate_.OnReopenFailure();
+        next_reopen_attempt_ = std::chrono::steady_clock::now();
+    }
+
+    void SendTcp() {
+        // Wait for room only while OBS reads; a stalled OBS costs nothing.
+        const int64_t waitUs = tcp_flow_.Stalled() ? 0 : kTcpSendWaitUs;
+        if (!tcp_endpoint_.Flush(tcp_queue_, waitUs)) {
+            tcp_queue_.Clear();
+            return;  // the next frame's Poll sees the client gone
+        }
+        if (tcp_queue_.Size() > kMaxTcpQueueBytes) {
+            log_line(stderr, "WARN: OBS TCP queue over %zu bytes; dropping the client\n", kMaxTcpQueueBytes);
+            tcp_endpoint_.Disconnect();
+            tcp_queue_.Clear();
+        }
+    }
+
+    // A custom AVIO whose bytes land in tcp_queue_. FFmpeg owns the buffer
+    // after this call; Close frees both.
+    int OpenTcpIo() {
+        auto* buffer = static_cast<unsigned char*>(av_malloc(kTcpIoBufferBytes));
+        if (!buffer) return AVERROR(ENOMEM);
+        context_->pb = avio_alloc_context(buffer, kTcpIoBufferBytes, 1, this, nullptr,
+                                          &ObsUdpRelay::OnTcpMuxBytes, nullptr);
+        if (!context_->pb) {
+            av_free(buffer);
+            return AVERROR(ENOMEM);
+        }
+        return 0;
+    }
+
+    static int OnTcpMuxBytes(void* opaque, const uint8_t* data, int size) {
+        if (size > 0) static_cast<ObsUdpRelay*>(opaque)->tcp_queue_.Append(data, static_cast<size_t>(size));
+        return size;
+    }
+
     bool ReportWriteFailure(int status) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_write_error_log_) {
@@ -273,7 +516,13 @@ private:
             av_write_trailer(context_);
         }
         if (context_->pb) {
-            avio_closep(&context_->pb);
+            if (tcp_) {
+                avio_flush(context_->pb);
+                av_freep(&context_->pb->buffer);
+                avio_context_free(&context_->pb);
+            } else {
+                avio_closep(&context_->pb);
+            }
         }
         avformat_free_context(context_);
         context_ = nullptr;
@@ -293,6 +542,13 @@ private:
     AVPacket* out_packet_ = nullptr;
     std::chrono::steady_clock::time_point next_write_error_log_{};
     std::chrono::steady_clock::time_point next_reopen_attempt_{};
+    // T2.6 TCP sink. Declared last: Close() in the destructor body writes the
+    // trailer into tcp_queue_, which must still exist.
+    bool tcp_ = false;
+    ObsTcpSendQueue tcp_queue_{};
+    ObsTcpFlowControl tcp_flow_{};
+    ObsTcpEndpoint tcp_endpoint_{};
+    uint64_t stall_dropped_base_ = 0;
 };
 
 static AVPixelFormat select_d3d11_format(AVCodecContext*, const AVPixelFormat* formats) {
@@ -788,7 +1044,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
                    timing.MaxArrivalGapUs() / 1000.0,
                    static_cast<unsigned>(timing.BurstFrames()),
                    timing.SkewUs() / 1000.0,
-                   obsUdpRelay ? "OBS_UDP_HEVC" : "GPU_RING");
+                   obsUdpRelay ? (relay->IsTcp() ? "OBS_TCP_HEVC" : "OBS_UDP_HEVC") : "GPU_RING");
             timing.ResetWindow();
             windowStart = now;
             windowStartFrame = frames;
@@ -1052,12 +1308,13 @@ static void start_crash_report_fetch(const std::string& host, bool directTcp) {
     std::thread(fetch_crash_report, host, directTcp).detach();
 }
 
-static int run_receiver(bool obsUdpRelay, const std::string& usbNetworkHost, bool directTcp,
-                        bool wifiDiscover) {
+static int run_receiver(bool obsUdpRelay, bool obsTcp, const std::string& usbNetworkHost,
+                        bool directTcp, bool wifiDiscover) {
     // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
     // transport-stream continuity counters and the OBS-facing timestamp domain.
     // This helper also guarantees the relay closes while Winsock is still live.
     ObsUdpRelay relay;
+    if (obsUdpRelay && obsTcp) relay.UseTcp();
     if (obsUdpRelay && !relay.Open(false)) {
         // Never exit on an OBS-side failure (R-ENG-ERR): keep receiving and
         // reopen the relay on the first decoder-join AU.
@@ -1149,12 +1406,17 @@ int main(int argc, char** argv) {
     // OBS relay is the production path.  Make it the double-click/default
     // behavior so users do not have to remember a command-line switch.
     bool obsUdpRelay = true;
+    bool obsTcp = false;  // T2.6: opt-in until validated on the device (DC)
     const char* explicitHost = nullptr;
     const char* directHost = nullptr;
     bool wifiDiscover = false;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--obs-udp") == 0) {
             obsUdpRelay = true;
+            obsTcp = false;
+        } else if (std::strcmp(argv[index], "--obs-tcp") == 0) {
+            obsUdpRelay = true;
+            obsTcp = true;
         } else if (std::strcmp(argv[index], "--gpu-ring") == 0) {
             // Retain the old diagnostic publisher only for development.
             obsUdpRelay = false;
@@ -1162,14 +1424,14 @@ int main(int argc, char** argv) {
             wifiDiscover = true;
         } else if (std::strcmp(argv[index], "--host") == 0) {
             if (index + 1 >= argc) {
-                log_line(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
+                log_line(stderr, "Usage: receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
                 return 2;
             }
             directHost = argv[++index];
         } else if (!explicitHost) {
             explicitHost = argv[index];
         } else {
-            log_line(stderr, "Usage: receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
+            log_line(stderr, "Usage: receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
             return 2;
         }
     }
@@ -1186,7 +1448,7 @@ int main(int argc, char** argv) {
         (environmentHost && *environmentHost ? environmentHost :
          (discoveredHost.empty() ? kPersonalHotspotGateway : discoveredHost));
     log_line(stdout, "INFO: iPhone Camera USB receiver build=%s\n",
-           obsUdpRelay ? "OBS_UDP_HEVC_RELAY_V1" : "GPU_RING_DIAGNOSTICS_V2");
+           !obsUdpRelay ? "GPU_RING_DIAGNOSTICS_V2" : obsTcp ? "OBS_TCP_HEVC_RELAY_V1" : "OBS_UDP_HEVC_RELAY_V1");
     if (wifiDiscover) {
         log_line(stdout, "INFO: iPhone Camera receiver started; Wi-Fi discovery (_ipcamstream._tcp) port=%u\n",
                DEVICE_PORT);
@@ -1197,7 +1459,7 @@ int main(int argc, char** argv) {
         log_line(stdout, "INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
                usbNetworkHost.c_str(), DEVICE_PORT);
     }
-    const int receiverStatus = run_receiver(obsUdpRelay, usbNetworkHost, directTcp, wifiDiscover);
+    const int receiverStatus = run_receiver(obsUdpRelay, obsTcp, usbNetworkHost, directTcp, wifiDiscover);
     WSACleanup();
     if (g_wifi.event) CloseHandle(g_wifi.event);
     // Let a waiting close-window handler return now that shutdown is complete.

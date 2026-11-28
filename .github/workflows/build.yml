@@ -220,6 +220,8 @@ jobs:
             "${{ github.workspace }}/tests/crash_report_test.cpp" \
             -o crash_report_test.exe
           ./crash_report_test.exe
+          g++ -std=c++20 -O2             -I"${{ github.workspace }}/windows"             "${{ github.workspace }}/tests/obs_tcp_flow_test.cpp"             -o obs_tcp_flow_test.exe
+          ./obs_tcp_flow_test.exe
           g++ -std=c++20 -O2 \
             -I"${{ github.workspace }}/protocol" \
             "${{ github.workspace }}/windows/receiver.cpp" \
@@ -241,7 +243,7 @@ jobs:
       - name: Receiver end-to-end tests (fake iPhone -> receiver.exe -> UDP sink)
         run: |
           cd "${{ github.workspace }}"
-          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart crash_report drift soak"
+          sh tests/receiver_e2e_test.sh "$PWD/windows-binaries/receiver.exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart tcp_steady tcp_paused tcp_reconnect crash_report drift soak"
 
       - uses: actions/upload-artifact@v7
         with:

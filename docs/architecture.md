@@ -22,9 +22,9 @@ hardware HEVC at 3840x2160/60. The receiver rejects corrupt or oversized
 packets and emits MPEG-TS over loopback UDP. End-to-end 4K60 still requires a
 30-minute phone/OBS soak test before it can be called reliable.
 
-**Receiver CLI:** `receiver.exe [--obs-udp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]`. `--wifi` finds the phone through Bonjour (`_ipcamstream._tcp`; Wi-Fi mode must be on in the app). `--host` connects straight to `<address>:12345` and skips usbmux and the Apple-adapter bind; it wins over `--wifi`. `IPHONE_CAMERA_UDID` picks one phone when several are on USB.
+**Receiver CLI:** `receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]`. `--wifi` finds the phone through Bonjour (`_ipcamstream._tcp`; Wi-Fi mode must be on in the app). `--host` connects straight to `<address>:12345` and skips usbmux and the Apple-adapter bind; it wins over `--wifi`. `IPHONE_CAMERA_UDID` picks one phone when several are on USB.
 
-**Ports:** TCP 12345 is the video stream (phone listens). TCP 12347 is the crash-report side channel (T6.1): the phone listens on it only while it holds an undelivered report, under the same USB-only / Wi-Fi opt-in rule as the stream. UDP 12346 on 127.0.0.1 is the OBS relay output (loopback only).
+**Ports:** TCP 12345 is the video stream (phone listens). TCP 12347 is the crash-report side channel (T6.1): the phone listens on it only while it holds an undelivered report, under the same USB-only / Wi-Fi opt-in rule as the stream. UDP 12346 on 127.0.0.1 is the OBS relay output (loopback only). With `--obs-tcp` (T2.6), the receiver instead listens on TCP 12346 on 127.0.0.1 for one OBS client. When OBS stops reading, it drops frames instead of queueing them (`windows/obs_tcp_flow.h`).
 
 ## Legacy virtual camera
 

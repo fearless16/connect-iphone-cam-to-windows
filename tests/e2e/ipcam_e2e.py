@@ -97,6 +97,12 @@ def load_access_units(path):
 # Fake iPhone: TCP server that speaks the wire format
 
 
+def filler_nal(size):
+    """An HEVC filler-data NAL (FD_NUT, type 38): decoders skip it. 0xFF
+    payload bytes never form a start code or need emulation prevention."""
+    return bytes([0, 0, 1, 38 << 1, 0x01]) + bytes([0xFF]) * size + bytes([0x80])
+
+
 class FakePhone:
     def __init__(self, units, session_fn, clock_rate=1.0):
         self.units = units
@@ -112,6 +118,8 @@ class FakePhone:
         self.thread = None
         self.session_index = 0
         self.conn = None
+        self.pad = b""  # appended to every AU (filler_nal) to model a 4K bit rate
+        self.join_pad = b""  # appended to join AUs only: a 4K keyframe size
 
     def start(self):
         deadline = time.monotonic() + 10
@@ -184,7 +192,8 @@ class FakePhone:
 
     def send_au(self, conn, index, session, capture_ns=None):
         unit = self.units[index % len(self.units)]
-        conn.sendall(self.header(len(unit.data), capture_ns=capture_ns) + unit.data)
+        data = unit.data + (self.join_pad if unit.join else b"") + self.pad
+        conn.sendall(self.header(len(data), capture_ns=capture_ns) + data)
         with self.lock:
             self.sends.append((session, index, unit.join, time.monotonic_ns()))
 
@@ -274,6 +283,105 @@ class UdpSink:
                 continue  # closed by outage() or stop(); the loop head decides
             self.queue.append((time.monotonic_ns(), data))
             self.count += 1
+
+    def take(self):
+        while True:
+            try:
+                yield self.queue.popleft()
+            except IndexError:
+                return
+
+    def stop(self):
+        self.stop_event.set()
+        self.thread.join(5)
+        if self.sock:
+            self.sock.close()
+
+
+class TcpSink:
+    """T2.6: stands in for OBS reading tcp://127.0.0.1:12346 (receiver --obs-tcp).
+    Delivers whole 188-byte TS packets. pause() stops reading but keeps the
+    socket open, like OBS with a hidden source; outage() closes and reconnects."""
+
+    # No SO_RCVBUF: FFmpeg's tcp:// leaves it at the OS default (Windows then
+    # autotunes the window), so whatever the kernel holds is measured too.
+
+    def __init__(self):
+        self.sock = None
+        self.queue = collections.deque()  # (arrival_ns, bytes)
+        self.count = 0
+        self.connects = 0
+        self.paused = threading.Event()
+        self.stop_event = threading.Event()
+        self.connected = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.rest = b""
+        self.resumed_ns = None
+
+    def start(self):
+        self.thread.start()
+
+    def wait_connected(self, seconds=10):
+        if not self.connected.wait(seconds):
+            raise ScenarioFailure("TCP sink never connected to 127.0.0.1:%d" % OBS_PORT)
+
+    def _connect(self):
+        while not self.stop_event.is_set():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1.0)  # Windows retries a refused connect for ~2 s
+            try:
+                sock.connect(("127.0.0.1", OBS_PORT))
+            except OSError:
+                sock.close()
+                self.stop_event.wait(0.05)
+                continue
+            sock.settimeout(0.2)
+            self.rest = b""
+            self.connects += 1
+            return sock
+        return None
+
+    def pause(self, seconds):
+        self.paused.set()
+        time.sleep(seconds)
+        self.resumed_ns = time.monotonic_ns()
+        self.paused.clear()
+
+    def outage(self, seconds):
+        """Close the connection like OBS reopening its input, then reconnect."""
+        self.connected.clear()
+        old, self.sock = self.sock, None
+        if old:
+            old.close()
+        time.sleep(seconds)
+        self.sock = self._connect()
+        if self.sock:
+            self.connected.set()
+
+    def _run(self):
+        self.sock = self._connect()
+        if self.sock:
+            self.connected.set()
+        while not self.stop_event.is_set():
+            sock = self.sock
+            if sock is None or self.paused.is_set():
+                time.sleep(0.005)
+                continue
+            try:
+                data = sock.recv(65536)
+            except socket.timeout:
+                continue
+            except OSError:
+                continue  # closed by outage() or stop()
+            if not data:
+                time.sleep(0.01)
+                continue
+            data = self.rest + data
+            whole = len(data) - len(data) % 188
+            self.rest = data[whole:]
+            if whole:
+                self.queue.append((time.monotonic_ns(), data[:whole]))
+                self.count += 1
 
     def take(self):
         while True:
@@ -444,11 +552,11 @@ class WindowsProcessProbe:
 
 
 class Receiver:
-    def __init__(self, exe, workdir):
+    def __init__(self, exe, workdir, extra_args=()):
         self.log_path = os.path.join(workdir, "receiver.log")
         self.log = open(self.log_path, "wb")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        self.proc = subprocess.Popen([os.path.abspath(exe), "--host", "127.0.0.1"], stdout=self.log,
+        self.proc = subprocess.Popen([os.path.abspath(exe), "--host", "127.0.0.1", *extra_args], stdout=self.log,
                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                      creationflags=flags)
         self.probe = WindowsProcessProbe(self.proc.pid) if os.name == "nt" else None
@@ -548,10 +656,10 @@ def steady_session(ph, conn, k):
     ph.stream(conn, k, start=0)
 
 
-def steady_check(ctx, summary):
+def steady_check(ctx, summary, after_ns=None):
     common_checks(ctx, summary)
     pes, sends = ctx["ts"]["pes"], ctx["phone"].sends
-    first_join = next(i for i, s in enumerate(sends) if s[2])
+    first_join = next(i for i, s in enumerate(sends) if s[2] and (after_ns is None or s[3] > after_ns))
     relayed = sends[first_join:]
     summary["sent"] = len(relayed)
     check(len(relayed) - 2 <= len(pes) <= len(relayed), "A3 relayed PES count",
@@ -772,6 +880,117 @@ def obs_restart_check(ctx, summary):
     check(wait <= 1.2, "keyframe within 1.2 s of the OBS restart (1 s keyframe interval)", "%.3f s" % wait)
 
 
+# tcp_* (T2.6): receiver --obs-tcp; the sink connects like OBS reading
+# tcp://127.0.0.1:12346. The receiver accepts only while it handles a frame, so
+# each session first streams until the sink is attached, then pauses 50 ms so
+# every later frame reaches a receiver that has already accepted it.
+def tcp_attach(ph, conn, k, index=0):
+    while not ph.sink.connected.is_set() and not ph.stop_event.is_set():
+        index = ph.stream(conn, k, start=index, count=6)
+    ph.idle(0.05)
+    ph.event("obs_connected", k)
+    return ph.next_join(index)
+
+
+def tcp_steady_session(ph, conn, k):
+    ph.stream(conn, k, start=tcp_attach(ph, conn, k))
+
+
+def tcp_steady_check(ctx, summary):
+    attached = ctx["phone"].events_named("obs_connected")
+    check(attached, "the OBS stand-in connected over TCP")
+    # 1.5 MB keyframes must go out at once, not one socket buffer per frame
+    # period, or the relay would see them age and drop the frames after them.
+    check("OBS stopped reading" not in ctx["log"], "4K-size keyframes never look like OBS stopped reading")
+    steady_check(ctx, summary, after_ns=attached[0][1])
+    summary["keyframes"] = sum(1 for p in ctx["ts"]["pes"] if is_join(p.nal_types()))
+
+
+TCP_PAUSE_S = 2.0
+TCP_KEYFRAME_PAD_BYTES = 1_500_000
+TCP_PAUSE_PAD_BYTES = 100_000
+
+
+def tcp_paused_session(ph, conn, k):
+    index = ph.stream(conn, k, start=tcp_attach(ph, conn, k), seconds=2.0)
+    ph.event("obs_pause", k)
+    pause = threading.Thread(target=ph.sink.pause, args=(TCP_PAUSE_S,), daemon=True)
+    pause.start()
+    index = ph.stream(conn, k, start=index, seconds=TCP_PAUSE_S)
+    pause.join(5)
+    ph.event("obs_resume", k)
+    ph.stream(conn, k, start=index)
+
+
+def obs_hold_ms(pes_list):
+    """What OBS adds by playing frames on their PTS: it anchors at the first
+    frame and shows each later one at anchor + PTS delta, so a frame waits
+    (anchor + delta) - arrival. A backlog at the anchor stays as this hold."""
+    timed = [p for p in pes_list if p.pts is not None]
+    if len(timed) < 2:
+        return []
+    p0, a0 = timed[0].pts, timed[0].arrival_ns
+    return [(p.pts - p0) / 90.0 - ms(p.arrival_ns - a0) for p in timed]
+
+
+def tcp_paused_check(ctx, summary):
+    common_checks(ctx, summary)
+    phone, pes = ctx["phone"], ctx["ts"]["pes"]
+    check(len(phone.events_named("accept")) == 1, "the phone session survives OBS pausing")
+    check(ctx["sink"].connects == 1, "OBS keeps its one connection", "%d connects" % ctx["sink"].connects)
+    relay_lines = [l.strip() for l in ctx["log"].splitlines()
+                   if "OBS stopped reading" in l or "OBS reading again" in l]
+    summary["stalls"] = sum("OBS stopped reading" in l for l in relay_lines)
+    summary["resumes"] = sum("OBS reading again" in l for l in relay_lines)
+    stalls, relay = summary["stalls"], " | ".join(relay_lines)
+    # Some Windows TCP stacks (the CI runner's) take more bytes partway through
+    # the pause while nobody reads, so the relay may resume early, write one
+    # join AU into the socket buffers, and stall again. That costs at most what
+    # the buffers hold, so allow a few drop runs, each a gap of at most one per PID.
+    check(1 <= stalls <= 3 and summary["resumes"] == stalls,
+          "one to three drop runs over the pause, each resumed", relay)
+    cc, pids = ctx["ts"]["cc_errors"], ctx["ts"]["pids"]
+    check(cc <= pids * stalls, "at most one continuity gap per PID per drop run",
+          "%d gaps, %d PIDs; relay: %s" % (cc, pids, relay))
+    check("OBS stopped reading" in ctx["log"], "receiver noticed OBS stopped reading")
+    check("OBS reading again" in ctx["log"], "receiver resumed when OBS read again")
+    resumed_ns = ctx["sink"].resumed_ns
+    check(resumed_ns, "OBS resumed reading")
+    after = [p for p in pes if p.arrival_ns >= resumed_ns]
+    check(after, "relay reaches OBS after the pause")
+    join = next((p for p in after if is_join(p.nal_types())), None)
+    check(join is not None, "a keyframe reaches OBS after the pause")
+    wait = (join.arrival_ns - resumed_ns) / 1e9
+    summary["keyframe_after_resume_s"] = round(wait, 3)
+    check(wait <= 1.2, "keyframe within 1.2 s of OBS reading again", "%.3f s" % wait)
+    # Bytes that were already in socket buffers arrive in a burst at resume.
+    burst = sum(1 for p in after if p.arrival_ns - resumed_ns < 20e6)
+    summary["frames_in_resume_burst"] = burst
+    # OBS (restart on activate) re-anchors on the first frame it reads after
+    # the pause. Measure what it then holds once the stream is live again.
+    hold = obs_hold_ms(after)
+    settled = [h for p, h in zip([p for p in after if p.pts is not None], hold)
+               if p.arrival_ns - resumed_ns > 1e9]
+    check(settled, "frames after the pause settled")
+    summary["obs_hold_after_resume_ms"] = {"p50": round(percentile(settled, 0.5), 1),
+                                           "max": round(max(settled), 1)}
+    # UDP would hold the whole pause here; without the timeline compression
+    # the resumed keyframe's PTS would jump TCP_PAUSE_S past the stale frames.
+    check(percentile(settled, 0.5) <= 150, "OBS holds at most 150 ms after resuming",
+          "%.1f ms" % percentile(settled, 0.5))
+
+
+def tcp_reconnect_session(ph, conn, k):
+    tcp_attach(ph, conn, k)
+    obs_restart_session(ph, conn, k)
+
+
+def tcp_reconnect_check(ctx, summary):
+    obs_restart_check(ctx, summary)
+    check(ctx["sink"].connects == 2, "OBS reconnected once", "%d connects" % ctx["sink"].connects)
+    check(ctx["log"].count("OBS connected to tcp://") == 2, "receiver accepted both OBS connections")
+
+
 # drift: the phone clock runs 1% fast (real crystals differ by ~20-50 ppm, which
 # is 0.07-0.18 s per hour; 1% makes an hour of drift visible in 20 s). OBS
 # schedules frames by PTS, so a PTS timeline that outruns the PC clock is
@@ -943,6 +1162,9 @@ SCENARIOS = {  # name: (seconds or None for --duration, session factory, checks[
     "oversize": (4.0, lambda a: invalid_header_session(True), invalid_header_check),
     "burst": (4.0, lambda a: burst_session, burst_check),
     "obs_restart": (7.0, lambda a: obs_restart_session, obs_restart_check),
+    "tcp_steady": (9.0, lambda a: tcp_steady_session, tcp_steady_check),
+    "tcp_paused": (11.0, lambda a: tcp_paused_session, tcp_paused_check),
+    "tcp_reconnect": (10.0, lambda a: tcp_reconnect_session, tcp_reconnect_check),
     "crash_report": (7.0, lambda a: crash_report_session, crash_report_check),
     "drift": (20.0, lambda a: drift_session, drift_check, DRIFT_CLOCK_RATE),
     "soak": (None, lambda a: soak_session_fn(a.session_seconds), soak_check),
@@ -958,10 +1180,18 @@ def run(args):
     workdir = args.workdir or tempfile.mkdtemp(prefix="ipcam_e2e_%s_" % args.scenario)
     os.makedirs(workdir, exist_ok=True)
     print("E2E %s: workdir %s" % (args.scenario, workdir), flush=True)
-    sink = UdpSink(args.sink_rcvbuf)
+    tcp = args.scenario.startswith("tcp_")
+    sink = TcpSink() if tcp else UdpSink(args.sink_rcvbuf)
     analyzer = TsAnalyzer(os.path.join(workdir, "capture.ts"))
     phone = FakePhone(units, make_session(args), clock_rate)
     phone.sink = sink
+    if args.scenario == "tcp_steady":
+        # A 4K60 IDR is 1-2 MB, several times what Windows buffers on loopback.
+        phone.join_pad = filler_nal(TCP_KEYFRAME_PAD_BYTES)
+    if args.scenario == "tcp_paused":
+        # About 48 Mbit/s like 4K60. Windows holds ~0.3 MB on a loopback
+        # connection nobody reads: 50 ms here, but seconds of the 360p fixture.
+        phone.pad = filler_nal(TCP_PAUSE_PAD_BYTES)
     crash = None
     crash_dir = os.path.join(os.path.dirname(os.path.abspath(args.receiver)), "crash-reports")
     crash_before = set(os.listdir(crash_dir)) if os.path.isdir(crash_dir) else set()
@@ -972,7 +1202,7 @@ def run(args):
             crash = CrashPort(CRASH_REPLIES)
         sink.start()
         phone.start()
-        receiver = Receiver(args.receiver, workdir)
+        receiver = Receiver(args.receiver, workdir, ["--obs-tcp"] if tcp else [])
         t0 = time.monotonic()
         next_report = t0 + 60
         while time.monotonic() - t0 < duration and receiver.alive():
@@ -999,7 +1229,7 @@ def run(args):
             crash.stop()
     for arrival, data in sink.take():
         analyzer.feed(arrival, data)
-    ctx = {"alive": alive, "receiver": receiver, "phone": phone, "workdir": workdir,
+    ctx = {"alive": alive, "receiver": receiver, "phone": phone, "workdir": workdir, "sink": sink,
            "ts": analyzer.result(), "log": receiver.text(), "memory": memory,
            "crash": crash, "crash_files": collect_crash_files(crash_dir, crash_before)}
     summary = {"scenario": args.scenario, "seconds": duration, "datagrams": sink.count,

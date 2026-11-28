@@ -66,5 +66,13 @@ Receiver console, `STAT:` line (printed every 120 frames):
 - Delay inside OBS (decode, scene render, output encoder) is not visible to the
   receiver. Only the glass-to-glass test captures it.
 - Lost UDP datagrams between the receiver and OBS show up as picture breakage
-  until the next keyframe, not in `STAT`. If you see it, raise Network
-  Buffering in OBS first.
+  until the next keyframe, not in `STAT`. If you see it, search the OBS log for
+  `Circular buffer overrun`. Don't raise Network Buffering: any value above 0
+  turns off FFmpeg's `nobuffer` flag, and the startup probe becomes permanent
+  delay (see [OBS-SETUP.md](../OBS-SETUP.md)).
+- A backlog that OBS queued itself (for example after the source was hidden
+  with **Restart playback when source becomes active** on) stays invisible to
+  the receiver. `extraDelayMs` stays near 0 while OBS shows old frames. With
+  `receiver.exe --obs-tcp` (T2.6) the receiver sees OBS stop reading. It then
+  logs `OBS stopped reading`, drops frames instead of queueing them, and
+  resumes live at the next keyframe (OBS-SETUP.md).
