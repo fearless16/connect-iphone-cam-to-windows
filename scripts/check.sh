@@ -127,7 +127,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     exe="${RECEIVER_EXE:-build/windows-binaries/receiver.exe}"
     if [ -f "$exe" ]; then
-      run "receiver e2e" sh tests/receiver_e2e_test.sh "$exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart crash_report drift soak"
+      run "receiver e2e" sh tests/receiver_e2e_test.sh "$exe" "steady midgop disconnect stall stall_timeout garbage oversize burst obs_restart tcp_steady tcp_paused tcp_reconnect crash_report drift soak"
     else
       skip "tests/receiver_e2e_test.sh" "receiver.exe not built (sh scripts/build_receiver_msys2.sh)"
     fi ;;
