@@ -3,7 +3,9 @@
 This project streams an iPhone rear camera at **4K60 over USB** to Windows.
 The supported single-user path is the iOS encoder plus `receiver.exe`, which
 relays HEVC to OBS over loopback UDP. In OBS, add a Media Source with
-`udp://127.0.0.1:12346` and input format `mpegts`.
+`udp://127.0.0.1:12346` and input format `mpegts`. `receiver.exe --obs-tcp`
+with input `tcp://127.0.0.1:12346` relays over loopback TCP instead, which
+never lets OBS build up a backlog (in testing; see [OBS-SETUP.md](OBS-SETUP.md)).
 
 The archived DirectShow and virtual-camera sources are disabled research code;
 they are not built, registered, or supported.

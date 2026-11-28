@@ -94,6 +94,7 @@ cpp_test tests/hevc_sps_test.cpp windows
 cpp_test tests/stream_timing_test.cpp windows
 cpp_test tests/wifi_discovery_test.cpp windows
 cpp_test tests/crash_report_test.cpp windows
+cpp_test tests/obs_tcp_flow_test.cpp windows
 
 echo "== Swift runtime tests"
 swift_test() { # TEST_SOURCE PRODUCT_SOURCE [extra swiftc flags...]

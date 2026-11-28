@@ -27,7 +27,8 @@ only **download, sign + install**. This is the whole point of `.github/workflows
    needs; keep them together.
    - Run `receiver.exe` to start the supported USB-to-OBS relay.
    - In OBS, add a **Media Source** with input `udp://127.0.0.1:12346` and
-     input format `mpegts`.
+     input format `mpegts`. With `receiver.exe --obs-tcp`, use
+     `tcp://127.0.0.1:12346` instead (OBS-SETUP.md).
 6. Plug the iPhone (app running) into the Windows PC via USB. Done.
 
 ## Why this works
@@ -40,7 +41,8 @@ only **download, sign + install**. This is the whole point of `.github/workflows
 
 ## Fallbacks if a step fails
 - **No video in OBS:** confirm that `receiver.exe` is running and the OBS Media
-  Source input is `udp://127.0.0.1:12346` with format `mpegts`.
+  Source input is `udp://127.0.0.1:12346` with format `mpegts`
+  (`tcp://127.0.0.1:12346` when the receiver runs with `--obs-tcp`).
 - **IPA won't install or stops opening:** the signature is missing or expired
   (7 days on a free Apple ID). Re-sign it with your sideloading tool, or build
   from Xcode on a Mac with your own team (docs/QUICKSTART.md Part A).

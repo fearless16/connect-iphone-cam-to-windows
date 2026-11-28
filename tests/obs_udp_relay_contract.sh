@@ -96,3 +96,41 @@ awk '
   /OBS relay recovered on fresh HEVC decoder-join AU/ { recovered_log = NR }
   END { exit !(reopened && reopened < write_call && write_call < success && success < recovered_log) }
 ' "$receiver"
+
+# T2.6 (G6): --obs-tcp. The receiver listens for OBS on loopback only, never
+# blocks on it, and drops frames instead of queueing them when OBS stops
+# reading. The flow control lives in the pure, runtime-tested obs_tcp_flow.h.
+grep -q '#include "obs_tcp_flow.h"' "$receiver"
+grep -q 'address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);' "$receiver"
+forbid -q 'INADDR_ANY' "$receiver"
+grep -q 'SO_EXCLUSIVEADDRUSE' "$receiver"
+grep -q 'listen(listener, 1)' "$receiver"
+grep -q 'ioctlsocket(accepted, FIONBIO, &nonBlocking)' "$receiver"
+grep -q 'WSAGetLastError() == WSAEWOULDBLOCK) {' "$receiver"
+grep -q 'if (left <= 0) return true;' "$receiver"
+forbid -q 'send(client_.*MSG_WAITALL' "$receiver"
+grep -q 'std::strcmp(argv\[index\], "--obs-tcp") == 0' "$receiver"
+grep -q 'if (obsUdpRelay && obsTcp) relay.UseTcp();' "$receiver"
+# UDP stays the default until the TCP relay is validated on the device.
+grep -q 'bool obsTcp = false;' "$receiver"
+# Every AU passes the flow control before it is muxed.
+grep -q 'if (tcp_ && !AdmitTcpFrame(arrivalUs, accessUnit.IsDecoderJoinPoint()))' "$receiver"
+grep -q 'tcp_queue_.IsBacklogged(arrivalUs, ObsTcpFlowControl::kMaxBacklogUs)' "$receiver"
+grep -q 'if (backlogged) tcp_queue_.DropUnsentFrames();' "$receiver"
+# No forward PTS jump over the dropped frames (OBS would hold it as delay).
+grep -q 'relativeUs = tcp_flow_.MapTimelineUs(relativeUs, kNominalFrameDurationUs);' "$receiver"
+# A client change resets the muxer before anything is flushed to the new client.
+awk '
+  /bool AdmitTcpFrame\(/ { inside = 1 }
+  inside && /if \(tcp_endpoint_.Poll\(\)\) ResetTcpClient\(\);/ { reset = NR }
+  inside && /tcp_endpoint_.Flush\(tcp_queue_\)/ && !flush { flush = NR }
+  inside && /^    }/ { inside = 0 }
+  END { exit !(reset && flush && reset < flush) }
+' "$receiver"
+# Memory guard if flow control ever fails: drop the client, never grow.
+grep -q 'tcp_queue_.Size() > kMaxTcpQueueBytes' "$receiver"
+# The post-mux send may wait for socket room, bounded, and never while stalled.
+grep -q 'static constexpr int64_t kTcpSendWaitUs = 4'"'"'000;' "$receiver"
+grep -q 'const int64_t waitUs = tcp_flow_.Stalled() ? 0 : kTcpSendWaitUs;' "$receiver"
+# OBS may open its input before the phone streams: listen when the relay opens.
+grep -q 'if (tcp_) tcp_endpoint_.EnsureListening();' "$receiver"

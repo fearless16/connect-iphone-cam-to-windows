@@ -30,6 +30,10 @@ if(BUILD_TESTING)
     target_include_directories(crash_report_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME crash_report_test COMMAND crash_report_test)
 
+    add_executable(obs_tcp_flow_test ../tests/obs_tcp_flow_test.cpp)
+    target_include_directories(obs_tcp_flow_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME obs_tcp_flow_test COMMAND obs_tcp_flow_test)
+
     add_executable(hevc_access_unit_test ../tests/hevc_access_unit_test.cpp)
     target_include_directories(hevc_access_unit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME hevc_access_unit_test COMMAND hevc_access_unit_test)

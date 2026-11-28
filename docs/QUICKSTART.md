@@ -150,7 +150,7 @@ may not deliver one at all if analytics sharing is off in iPhone Settings.
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | Several iPhones/iPads plugged in, receiver picks the wrong one | The receiver lists every USB device's `udid` once. Set `IPHONE_CAMERA_UDID=<udid>` before starting it. |
 | `avformat-*.dll was not found` when starting receiver.exe | Keep every DLL from the `windows-binaries` folder next to `receiver.exe`. CI builds before this fix shipped the exe alone; download a newer artifact. |
-| OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346`, then check the receiver console and phone stream. |
+| OBS Media Source shows no video | Confirm its input is `udp://127.0.0.1:12346` (or `tcp://127.0.0.1:12346` with `receiver.exe --obs-tcp`), then check the receiver console and phone stream. |
 | Video froze after clicking the receiver window | Fixed in this receiver build (QuickEdit is disabled). On old builds, press Esc in the console. |
 | Black frame in OBS | Transport not yet flowing; check the receiver console / phone is streaming. |
 

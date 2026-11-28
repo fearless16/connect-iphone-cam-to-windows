@@ -207,7 +207,7 @@ while it is `PENDING`.
 | G3 | Keyframe interval 2 s → 1 s (`MaxKeyFrameInterval` 120 → 60) | Approve. Halves the worst-case recovery and OBS join time for a small quality cost | T2.4 | APPROVED (2026-11-26) |
 | G4 | Pause HEVC encoding while no PC is connected (preview stays live) | Approve. Less heat, fewer thermal interruptions | T2.7 | APPROVED (2026-11-26) |
 | G5 | Relay PTS taken from PC arrival time instead of the phone clock | Approve **only if** DC-2 shows delay growing over a session | T2.5 | APPROVED (2026-11-26) |
-| G6 | Relay to OBS over loopback TCP instead of UDP (lossless, joins OBS at an IDR) | Decide after DC-2/T0.6 data. Biggest change in the plan | T2.6 | PENDING |
+| G6 | Relay to OBS over loopback TCP instead of UDP (lossless, joins OBS at an IDR) | Decide after DC-2/T0.6 data. Biggest change in the plan | T2.6 | APPROVED 2026-11-28 (owner: "Yes, build it"; opt-in `--obs-tcp`, UDP stays default until DC validation) |
 | G7 | Wi-Fi exposure model. **A:** opt-in switch, off by default; when off, the phone refuses Wi-Fi and cellular connections; no authentication. **B:** A plus a pairing PIN (needs a protocol change, D3) | **A** now; B later if ever needed | T3.1, T3.3 | APPROVED (2026-11-26, option A) |
 | G8 | Wi-Fi bitrate 25 Mbps (USB stays 40 Mbps) | Superseded by G8′ ([STREAMER_FEATURES_PLAN.md](STREAMER_FEATURES_PLAN.md) section 4) | T3.2 | SUPERSEDED |
 | G9 | Retire `--gpu-ring` diagnostics (removes the D3D11 decode path, D1, and D10) | Approve (optional cleanup) | T4.1 | PENDING |
@@ -1098,6 +1098,24 @@ mini-plan of 3–4 sub-branches for owner review. The design to evaluate:
 - Pure parts (the ring and the client state machine) go in a new
   `windows/*.h` with runtime tests. e2e gets a TCP sink.
 
+**As built (2026-11-28).** The owner approved G6 directly. The cause was then
+known: OBS's restart-on-activate replays a stale FFmpeg UDP FIFO, and over UDP
+the receiver can't see a backlog that OBS holds. The design differs from the
+one above in these ways:
+- There's no 8 MB ring. `windows/obs_tcp_flow.h` keeps a send queue with
+  access-unit boundaries. When the oldest unsent frame is more than 100 ms old,
+  OBS has stopped reading. The relay then drops every later queued frame but
+  **keeps the client**. It keeps the partly sent frame, so TS stays 188-byte
+  aligned, and resumes at the next join AU. Dropping the client would make OBS
+  reconnect, which costs 2–3 s.
+- After a dropped run, the resumed AU's PTS is the last written PTS plus one
+  nominal frame (`MapTimelineUs`). OBS would otherwise wait out the gap and
+  keep it as delay.
+- A 16 MB queue cap drops the client, as a memory guard only.
+- Windows holds about 0.3 MB on a loopback connection nobody reads, even
+  without `SO_RCVBUF`, measured on 2026-11-28. At 4K60 that is about 50 ms;
+  the e2e `tcp_paused` scenario pads AUs to that bit rate.
+
 ### T2.7 Pause encoding with no PC · `perf/ios-idle-encoder-pause` · S · Gate G4 · deps T1.6
 
 **Steps:**
@@ -1305,7 +1323,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | DC-2 | (owner) | — | T2.1–T2.3 | — | TODO | | decides G3/G5/G6 |
 | T2.4 | perf/ios-encoder-latency | S | DC-2 | G3 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). Steps 1-2 done (60 frames + 1 s duration; speed hint non-fatal); Swift compiled in CI. Step 3 skipped: no DC-2 data, maxQueuedPackets stays 8 |
 | T2.5 | fix/relay-arrival-timeline | S | T2.1, T0.6 | G5 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). e2e drift (phone clock 1% fast): PTS vs arrival moved 179.6 ms before, 0.04 ms after; burst min offset -299 ms -> 0 ms. BeginSession removed (contract pin changed with reason). DC-2 30-min repeat open |
-| T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | TODO | | optional; mini-plan first |
+| T2.6 | feat/relay-tcp-output | O | DC-2 | G6 | IN REVIEW | | Built 2026-11-28 without the mini-plan, at the owner's request. Local e2e `tcp_steady`/`tcp_paused`/`tcp_reconnect` pass; branch CI and a device check pending |
 | T2.7 | perf/ios-idle-encoder-pause | S | T1.6 | G4 | DONE | 2026-11-26 | Merged to main 95e256d via release/long-streams; branch CI green (run 45856229625, windows + ios, e2e all scenarios). Resume also forces an IDR and restarts the HEVC fps average. Liveness watchdog unaffected (counts sensor frames). Device check open (HEVC 0 fps with no PC, video < 1 s after connect) |
 | T3.1 | feat/ios-wifi-mode | S | T1.4, T0.4 | G7 | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013 (app built, Swift tests passed). Unverified: usbmux still reaches the listener with Wi-Fi off, and the Personal Hotspot USB fallback (DC-3); AC3 CI |
 | T3.2 | feat/ios-wifi-bitrate | S | T3.1 | G8 | SKIPPED | 2026-11-25 | superseded by T5.4 + T5.8 |
