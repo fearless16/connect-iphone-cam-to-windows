@@ -184,6 +184,9 @@ grep -q 'DataRateLimits, value: rateLimit' "$source"
 grep -q 'MaxKeyFrameInterval, value: NSNumber(value: 60)' "$source"
 grep -q 'MaxKeyFrameIntervalDuration, value: NSNumber(value: 1)' "$source"
 grep -q 'PrioritizeEncodingSpeedOverQuality' "$source"
+# Low latency: the encoder may hold at most one frame (default is unlimited).
+grep -q 'kVTCompressionPropertyKey_MaxFrameDelayCount' "$source"
+grep -A1 'kVTCompressionPropertyKey_MaxFrameDelayCount' "$source" | grep -q 'NSNumber(value: 1)'
 grep -q 'setIdleTimerDisabled(true)' "$source"
 # G4: encode only while a PC receiver is connected; the preview stays live,
 # and resuming forces an IDR.
