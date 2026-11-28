@@ -1334,7 +1334,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.0 | diag/ios-nwerror-detail | H | — | — | DONE | 2026-11-26 | Merged without CI (owner instruction). Swift build + stream_sender_test unverified; CI macOS must confirm |
 | T5.1 | ci/xcode-26-sdk | H | — | — | DONE | 2026-11-26 | Merged without CI (owner instruction). Unverified: runner SDK is 26 on macos-15 (else switch to macos-26); API-name step output still to be copied for T5.9/T5.10 |
 | T5.2 | diag/ios-capability-probe | S | T5.1 | — | DONE | 2026-11-26 | Swift not compiled locally; CI not run. Unverified: AVFoundation property names (esp. isCinematicVideoCaptureSupported, iOS 26 SDK); AC3 = DC-4 on device |
-| DC-4 | (owner) | — | T5.2 | — | TODO | | decides G10/G11/G12 |
+| DC-4 | (owner) | — | T5.2 | — | DONE | 2026-11-28 | iPhone15,2, iOS 27.2.1 (section 10). Cinematic: rear Dual Wide 1080p30 + 4K30 → T5.9 goes ahead. Portrait: no rear format; front Wide/TrueDepth up to 1920x1440 at 30 fps → T5.10 uses the front camera |
 | DC-5a | (owner) | — | T5.0, T3.1 | — | TODO | | USB vs Wi-Fi A/B |
 | T5.4 | feat/ios-quality-presets | S | T3.1, T5.5 | G8′ | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013. 183 code lines. AC2 CI; AC5-AC7 device (DC-5a/DC-5b) |
 | T5.5 | feat/receiver-resolution-follow | S | — | — | DONE | 2026-11-26 | hevc_sps_test + receiver link verified locally (MSYS2 g++); Merged without CI (owner instruction). AC3 (e2e 1080p->720p, needs G1) and AC4 (DC-5b device) open |
@@ -1342,7 +1342,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | T5.7 | feat/ios-quality-advisor | S | T5.8 | — | DONE | 2026-11-26 | Merged locally, CI not run (owner instruction). Later verified: main CI green at 77cd013. AC2 device (DC-5b) |
 | DC-5b | (owner) | — | T5.4, T5.5, T5.7, T5.8 | — | TODO | | decides G13 |
 | T5.6 | feat/receiver-constant-latency | O | T5.5, DC-5b | G13 | TODO | | |
-| T5.9 | feat/ios-cinematic-mode | O | T5.4, DC-4 | G11 | TODO | | 30 fps only |
+| T5.9 | feat/ios-cinematic-mode | O | T5.4, DC-4 | G11 | IN PROGRESS | 2026-11-28 | 30 fps only. Deviations: tap = tracking focus at the point, long press = fixed focus (SDK has `setCinematicVideoTrackingFocus(at:)`, so no metadata output); `frameRate` contract now pins `isCinematic ? 30 : 60` |
 | T5.10 | feat/ios-portrait-effect | S | T5.4, DC-4 | G12 | TODO | | Portrait only; never 4K |
 | T5.11 | docs/wifi-presets-effects | H | T5.0–T5.10, T3.3 | — | TODO | | deps may be SKIPPED |
 | DC-6 | (owner) | — | T5.11 | — | TODO | | |
@@ -1354,7 +1354,7 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 
 | Date | Checkpoint | App build (CI run) | Receiver build | Result | Numbers (latency ms, reconnects, thermal) | Notes |
 |---|---|---|---|---|---|---|
-| | | | | | | |
+| 2026-11-28 | DC-4 capability report | main after T5.2 | — | DONE | thermal nominal | iPhone15,2 (14 Pro), iOS 27.2.1. `cinematic=y`: back BuiltInDualWideCamera 1920x1080 and 3840x2160 at maxFps=30 (420v + x420); front BuiltInTrueDepthCamera 1920x1080 and 3840x2160 at 30. `portrait=y@30` (+ `studio=y`): front WideAngle and TrueDepth 420v formats from 1280x720 to 1920x1440, never 4K; **no rear format**. `centerStage=n`, `bg=n` everywhere. All rear Wide/Dual Wide/Triple 720p/1080p/1440p/4K formats reach 60 fps |
 
 ---
 
@@ -1365,4 +1365,5 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | 2026-11-25 | Initial plan from code review of `f657cdd` | Claude (Opus) |
 | 2026-11-25 | Added Phase 5 (STREAMER_FEATURES_PLAN.md): Wi-Fi presets, advisor, constant latency, Cinematic, effects. G8 → G8′; T3.2 superseded; new gates G10–G14 | Claude (Opus), at owner's request |
 | 2026-11-25 | Owner device is iPhone 14 Pro. G11 (Cinematic 30 fps) and G12 (Portrait only, front-camera fallback) approved; T5.10 renamed `feat/ios-portrait-effect` | Claude (Opus), owner decision |
+| 2026-11-28 | DC-4 recorded: T5.9 goes ahead on the rear Dual Wide camera; T5.10 falls back to the front camera (no rear Portrait format) | Claude (Opus), owner report |
 | 2026-11-25 | STREAMER_FEATURES_PLAN.md reviewed for executor clarity: identifiers verified at `2e7086b`; added executor quick start (§0), exact code shapes, contract lines and stop conditions; T5.4 now needs T5.5; T5.2 probes front cameras; SPS golden vectors embedded; rule 0.2 says SKIPPED satisfies a dependency | Claude (Opus), at owner's request |
