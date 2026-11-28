@@ -107,10 +107,13 @@ cable is not practical.
 2. On the phone, turn on the **Wi-Fi** switch (top right). It is off by default
    and remembers its setting. The status panel then shows
    `WI-FI <ip>:12345 • visible to this network`.
-3. On the PC run `receiver.exe --wifi`. It finds the phone through Bonjour
-   (`_ipcamstream._tcp`) and looks it up again on every reconnect. If discovery
-   finds nothing (some routers block multicast), run `receiver.exe --host <ip>`
-   with the address from step 2.
+3. On the PC run `receiver.exe` as usual. With no flags it tries USB first on
+   every attempt and switches to Wi-Fi by itself when no USB iPhone answers. It
+   finds the phone through Bonjour (`_ipcamstream._tcp`) and looks it up again on
+   every reconnect. Plug the cable back in and the next reconnect uses USB.
+   `receiver.exe --wifi` uses Wi-Fi only, and `receiver.exe --usb-only` never
+   tries Wi-Fi. If discovery finds nothing (some routers block multicast), run
+   `receiver.exe --host <ip>` with the address from step 2.
 
 Flipping the switch does not interrupt a USB stream that is already running;
 turning it off ends only a Wi-Fi connection.
@@ -145,7 +148,8 @@ may not deliver one at all if analytics sharing is off in iPhone Settings.
 | Connection is unreliable | Use a USB port directly on the motherboard (no hub) and a data-capable cable, not a charge-only one. |
 | Phone asks "Trust This Computer?" | Tap Trust and enter the passcode once. Without it the PC cannot reach the app. |
 | iOS asks "Allow accessory to connect?" | Allow it. |
-| Find the phone on Wi-Fi without typing its address | Run `receiver.exe --wifi` (Wi-Fi mode must be on in the app). `--host` wins if both are given. |
+| Find the phone on Wi-Fi without typing its address | Plain `receiver.exe` falls back to Wi-Fi when no USB iPhone answers; `receiver.exe --wifi` uses Wi-Fi only. Wi-Fi mode must be on in the app. `--host` wins if both are given. |
+| Never try Wi-Fi | Run `receiver.exe --usb-only`. |
 | Connect to a specific phone address (Wi-Fi or tests) | Run `receiver.exe --host <ip>`. It connects straight to `<ip>:12345` and skips usbmux. |
 | Receiver needs a different iPhone USB address | Run `receiver.exe <iPhone-USB-gateway>` or set `IPHONE_CAMERA_HOST`; normally it auto-detects it. |
 | Several iPhones/iPads plugged in, receiver picks the wrong one | The receiver lists every USB device's `udid` once. Set `IPHONE_CAMERA_UDID=<udid>` before starting it. |

@@ -807,6 +807,13 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if speedStatus != noErr {
             Self.log.notice("HEVC encoder ignored PrioritizeEncodingSpeedOverQuality: \(speedStatus)")
         }
+        // Optional hint: the encoder may hold at most one frame before it must
+        // emit it (the default is unlimited). Caps encoder delay at ~16 ms at 60 fps.
+        let delayStatus = VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+                                               value: NSNumber(value: 1))
+        if delayStatus != noErr {
+            Self.log.notice("HEVC encoder ignored MaxFrameDelayCount: \(delayStatus)")
+        }
 
         let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(enc)
         guard prepareStatus == noErr else {

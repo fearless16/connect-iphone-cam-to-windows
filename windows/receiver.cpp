@@ -1306,7 +1306,7 @@ static void start_crash_report_fetch(const std::string& host, bool directTcp) {
 }
 
 static int run_receiver(bool obsUdpRelay, bool obsTcp, const std::string& usbNetworkHost,
-                        bool directTcp, bool wifiDiscover) {
+                        bool directTcp, bool wifiDiscover, bool autoWifiFallback) {
     // Keep one MPEG-TS muxer alive across phone reconnects. This preserves its
     // transport-stream continuity counters and the OBS-facing timestamp domain.
     // This helper also guarantees the relay closes while Winsock is still live.
@@ -1319,21 +1319,31 @@ static int run_receiver(bool obsUdpRelay, bool obsTcp, const std::string& usbNet
         relay.ArmRecovery();
     }
 
+    bool wifiFallbackNext = false;
     while (!g_stopRequested.load()) {
         // Wi-Fi mode looks the phone up on every attempt: a DHCP lease may have
         // moved it. No result is a normal retry, never an exit (R-ENG-ERR).
+        // Default mode: every cycle tries USB first; only right after a failed
+        // USB attempt does it look on Wi-Fi, so a phone plugged in again is
+        // picked up on the next cycle. The phone announces itself on Wi-Fi only
+        // while its Wi-Fi switch is on.
+        const bool wifiAttempt = wifiDiscover || wifiFallbackNext;
+        wifiFallbackNext = false;
         std::string target = usbNetworkHost;
-        if (wifiDiscover) target = discover_iphone_wifi_host();
-        if (wifiDiscover && target.empty() && !g_stopRequested.load()) {
+        const bool overNetwork = directTcp || wifiAttempt;
+        if (wifiAttempt) target = discover_iphone_wifi_host();
+        if (wifiAttempt && target.empty() && !g_stopRequested.load()) {
             log_line(stderr, "INFO: no iPhone found on Wi-Fi (is Wi-Fi mode on in the app?)\n");
+        } else if (wifiAttempt && !wifiDiscover && !target.empty()) {
+            log_line(stdout, "INFO: no USB iPhone; auto-switching to Wi-Fi %s\n", target.c_str());
         }
-        const SOCKET fd = connect_to_device(target.c_str(), directTcp || wifiDiscover);
+        const SOCKET fd = connect_to_device(target.c_str(), overNetwork);
         if (fd != INVALID_SOCKET) {
             // Keep Windows from sleeping while a phone streams: OBS blocks
             // sleep only while it records or streams, not while it previews.
             // The display may still turn off.
             SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
-            start_crash_report_fetch(target, directTcp || wifiDiscover);
+            start_crash_report_fetch(target, overNetwork);
             receive_session(fd, obsUdpRelay ? &relay : nullptr);
             SetThreadExecutionState(ES_CONTINUOUS);
             closesocket(fd);
@@ -1342,6 +1352,8 @@ static int run_receiver(bool obsUdpRelay, bool obsTcp, const std::string& usbNet
             // a timed-out frame): reconnect quickly so OBS freezes briefly.
             log_line(stderr, "WARN: stream ended; reconnecting in 250 ms\n");
             sleep_unless_stopped(kReconnectDelayMs);
+        } else if (autoWifiFallback && !wifiAttempt) {
+            wifiFallbackNext = true;  // no USB iPhone: look on Wi-Fi right away
         } else {
             log_line(stderr, "INFO: retrying iPhone connection in 1 second\n");
             sleep_unless_stopped(kNoDeviceRetryMs);
@@ -1407,6 +1419,7 @@ int main(int argc, char** argv) {
     const char* explicitHost = nullptr;
     const char* directHost = nullptr;
     bool wifiDiscover = false;
+    bool usbOnly = false;
     for (int index = 1; index < argc; ++index) {
         if (std::strcmp(argv[index], "--obs-udp") == 0) {
             obsUdpRelay = true;
@@ -1419,16 +1432,18 @@ int main(int argc, char** argv) {
             obsUdpRelay = false;
         } else if (std::strcmp(argv[index], "--wifi") == 0) {
             wifiDiscover = true;
+        } else if (std::strcmp(argv[index], "--usb-only") == 0) {
+            usbOnly = true;
         } else if (std::strcmp(argv[index], "--host") == 0) {
             if (index + 1 >= argc) {
-                log_line(stderr, "Usage: receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
+                log_line(stderr, "Usage: receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address> | --usb-only] [iPhone USB host]\n");
                 return 2;
             }
             directHost = argv[++index];
         } else if (!explicitHost) {
             explicitHost = argv[index];
         } else {
-            log_line(stderr, "Usage: receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address>] [iPhone USB host]\n");
+            log_line(stderr, "Usage: receiver.exe [--obs-udp|--obs-tcp|--gpu-ring] [--wifi | --host <iPhone address> | --usb-only] [iPhone USB host]\n");
             return 2;
         }
     }
@@ -1440,6 +1455,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     const bool directTcp = directHost != nullptr;
+    // No transport flag: USB first, Wi-Fi discovery as the fallback.
+    const bool autoWifiFallback = !directTcp && !wifiDiscover && !usbOnly;
     const std::string discoveredHost = (directTcp || wifiDiscover) ? std::string() : discover_iphone_usb_host();
     const std::string usbNetworkHost = directTcp ? directHost : explicitHost ? explicitHost :
         (environmentHost && *environmentHost ? environmentHost :
@@ -1453,10 +1470,11 @@ int main(int argc, char** argv) {
         log_line(stdout, "INFO: iPhone Camera receiver started; direct TCP host=%s port=%u\n",
                usbNetworkHost.c_str(), DEVICE_PORT);
     } else {
-        log_line(stdout, "INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u\n",
-               usbNetworkHost.c_str(), DEVICE_PORT);
+        log_line(stdout, "INFO: iPhone Camera USB receiver started; USB-network host=%s port=%u%s\n",
+               usbNetworkHost.c_str(), DEVICE_PORT,
+               autoWifiFallback ? "; Wi-Fi fallback when no USB iPhone" : "");
     }
-    const int receiverStatus = run_receiver(obsUdpRelay, obsTcp, usbNetworkHost, directTcp, wifiDiscover);
+    const int receiverStatus = run_receiver(obsUdpRelay, obsTcp, usbNetworkHost, directTcp, wifiDiscover, autoWifiFallback);
     WSACleanup();
     if (g_wifi.event) CloseHandle(g_wifi.event);
     // Let a waiting close-window handler return now that shutdown is complete.
