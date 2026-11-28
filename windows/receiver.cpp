@@ -923,7 +923,8 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
     uint64_t frames = 0, decoded = 0;
     uint64_t skippedUntilRandomAccess = 0, relayWriteFailures = 0, relayGateDrops = 0;
     bool waitingForRandomAccess = true;
-    uint64_t previousTimestampUs = 0, sourceGapFrames = 0;
+    uint64_t previousTimestampUs = 0;
+    SourceGapCounter sourceGapFrames;
     // STAT rates cover the frames since the previous STAT line, so a problem
     // in hour three of a long stream is not averaged away.
     auto windowStart = std::chrono::steady_clock::now();
@@ -983,15 +984,9 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             windowStart = std::chrono::steady_clock::now();
             windowStartFrame = 1;
             windowStartSourceUs = h.timestamp_us;
-        } else if (h.timestamp_us > previousTimestampUs) {
-            const uint64_t deltaUs = h.timestamp_us - previousTimestampUs;
-            // A 60 fps source should advance by about 16.7 ms. Count only
-            // significant gaps so this remains useful if the encoder jitters.
-            constexpr uint64_t kFrameUs = kNominalFrameDurationUs;
-            if (deltaUs > kFrameUs * 3 / 2) {
-                sourceGapFrames += (deltaUs + kFrameUs / 2) / kFrameUs - 1;
-            }
         }
+        // Learns the 60 or 30 fps cadence, so Cinematic frames are not gaps.
+        sourceGapFrames.OnTimestamp(h.timestamp_us);
         previousTimestampUs = h.timestamp_us;
 
         frames++;
@@ -1034,7 +1029,7 @@ static void receive_session(SOCKET fd, ObsUdpRelay* relay) {
             log_line(stdout, "STAT: recv=%.1f fps sourcePTS=%.1f gaps=%llu relayDrop=%llu relayGateDrop=%llu decode=%llu gpu=%llu cpu=%llu ringDrop=%llu "
                    "extraDelayMs=%.1f maxExtraMs=%.1f maxGapMs=%.1f burst=%u skewMs=%.1f mode=%s frames\n",
                    recvFps, sourceFps,
-                   static_cast<unsigned long long>(sourceGapFrames),
+                   static_cast<unsigned long long>(sourceGapFrames.GapFrames()),
                    static_cast<unsigned long long>(relayWriteFailures),
                    static_cast<unsigned long long>(relayGateDrops),
                    static_cast<unsigned long long>(decoded),

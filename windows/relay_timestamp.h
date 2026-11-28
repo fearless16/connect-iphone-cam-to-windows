@@ -3,7 +3,8 @@
 #include <cstdint>
 
 // Nominal duration of one 60 fps frame. Used for the MPEG-TS packet duration
-// and to count source gaps; it never sets a timestamp.
+// and the OBS TCP timeline step; it never sets a timestamp. Source gaps are
+// counted by SourceGapCounter (stream_timing.h), which learns the cadence.
 constexpr uint64_t kNominalFrameDurationUs = 16'667;
 
 // G5: the relay timeline follows PC arrival time, not the phone clock. OBS
