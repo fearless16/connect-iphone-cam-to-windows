@@ -938,9 +938,13 @@ def tcp_paused_check(ctx, summary):
     phone, pes = ctx["phone"], ctx["ts"]["pes"]
     check(len(phone.events_named("accept")) == 1, "the phone session survives OBS pausing")
     check(ctx["sink"].connects == 1, "OBS keeps its one connection", "%d connects" % ctx["sink"].connects)
+    relay_lines = [l.strip() for l in ctx["log"].splitlines()
+                   if "OBS stopped reading" in l or "OBS reading again" in l]
+    summary["stalls"] = sum("OBS stopped reading" in l for l in relay_lines)
+    summary["resumes"] = sum("OBS reading again" in l for l in relay_lines)
     cc, pids = ctx["ts"]["cc_errors"], ctx["ts"]["pids"]
     check(cc <= pids, "at most one continuity gap per PID across the dropped frames",
-          "%d gaps, %d PIDs" % (cc, pids))
+          "%d gaps, %d PIDs; relay: %s" % (cc, pids, " | ".join(relay_lines)))
     check("OBS stopped reading" in ctx["log"], "receiver noticed OBS stopped reading")
     check("OBS reading again" in ctx["log"], "receiver resumed when OBS read again")
     resumed_ns = ctx["sink"].resumed_ns
