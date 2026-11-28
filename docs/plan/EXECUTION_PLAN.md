@@ -1365,5 +1365,5 @@ Status values: `TODO`, `IN-PROGRESS`, `DONE-PENDING-MERGE`, `DONE` (merged),
 | 2026-11-25 | Initial plan from code review of `f657cdd` | Claude (Opus) |
 | 2026-11-25 | Added Phase 5 (STREAMER_FEATURES_PLAN.md): Wi-Fi presets, advisor, constant latency, Cinematic, effects. G8 → G8′; T3.2 superseded; new gates G10–G14 | Claude (Opus), at owner's request |
 | 2026-11-25 | Owner device is iPhone 14 Pro. G11 (Cinematic 30 fps) and G12 (Portrait only, front-camera fallback) approved; T5.10 renamed `feat/ios-portrait-effect` | Claude (Opus), owner decision |
-| 2026-11-28 | DC-4 recorded: T5.9 goes ahead on the rear Dual Wide camera; T5.10 falls back to the front camera (no rear Portrait format) | Claude (Opus), owner report |
+| 2026-11-28 | DC-4 recorded: T5.9 goes ahead on the rear Dual Wide camera; T5.10 falls back to the front camera (no rear Portrait format) | Claude (Opus), owner report |
 | 2026-11-25 | STREAMER_FEATURES_PLAN.md reviewed for executor clarity: identifiers verified at `2e7086b`; added executor quick start (§0), exact code shapes, contract lines and stop conditions; T5.4 now needs T5.5; T5.2 probes front cameras; SPS golden vectors embedded; rule 0.2 says SKIPPED satisfies a dependency | Claude (Opus), at owner's request |

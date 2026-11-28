@@ -115,5 +115,93 @@ int main() {
         assert(stats.MaxArrivalGapUs() == 0);
     }
 
+    // SourceGapCounter: steady 60 fps and steady 30 fps count no gaps.
+    {
+        for (uint64_t frame : {uint64_t{16'667}, uint64_t{33'333}}) {
+            SourceGapCounter gaps;
+            for (uint64_t i = 0; i < 600; ++i) gaps.OnTimestamp(kClockOriginUs + i * frame);
+            assert(gaps.GapFrames() == 0);
+            assert(gaps.CadenceUs() == frame);
+        }
+    }
+
+    // One dropped frame and one three-frame hole at 60 fps count 1 + 3.
+    {
+        SourceGapCounter gaps;
+        uint64_t t = 0;
+        for (int i = 0; i < 20; ++i) gaps.OnTimestamp(t += kFrameUs);
+        gaps.OnTimestamp(t += 2 * kFrameUs);
+        for (int i = 0; i < 20; ++i) gaps.OnTimestamp(t += kFrameUs);
+        gaps.OnTimestamp(t += 4 * kFrameUs);
+        gaps.OnTimestamp(t += kFrameUs);
+        assert(gaps.GapFrames() == 4);
+    }
+
+    // The same holes at 30 fps (Cinematic) count the same.
+    {
+        SourceGapCounter gaps;
+        constexpr uint64_t k30 = 33'333;
+        uint64_t t = 0;
+        for (int i = 0; i < 20; ++i) gaps.OnTimestamp(t += k30);
+        gaps.OnTimestamp(t += 2 * k30);
+        gaps.OnTimestamp(t += k30);
+        assert(gaps.GapFrames() == 1);
+    }
+
+    // Jitter within +/-25% is not a gap.
+    {
+        SourceGapCounter gaps;
+        uint64_t t = 0;
+        for (int i = 0; i < 300; ++i) gaps.OnTimestamp(t += (i % 2) ? kFrameUs + 3'000 : kFrameUs - 3'000);
+        assert(gaps.GapFrames() == 0);
+    }
+
+    // Switching 60 -> 30 fps mid-session relocks without counting false gaps,
+    // and real gaps after the switch are counted at the new cadence.
+    {
+        SourceGapCounter gaps;
+        constexpr uint64_t k30 = 33'333;
+        uint64_t t = 0;
+        for (int i = 0; i < 120; ++i) gaps.OnTimestamp(t += kFrameUs);
+        for (int i = 0; i < 120; ++i) gaps.OnTimestamp(t += k30);
+        assert(gaps.GapFrames() == 0);
+        assert(gaps.CadenceUs() == k30);
+        gaps.OnTimestamp(t += 3 * k30);
+        gaps.OnTimestamp(t += k30);
+        assert(gaps.GapFrames() == 2);
+        // ...and back to 60 fps.
+        for (int i = 0; i < 120; ++i) gaps.OnTimestamp(t += kFrameUs);
+        assert(gaps.GapFrames() == 2);
+        assert(gaps.CadenceUs() == kFrameUs);
+    }
+
+    // A first delta that is itself a gap self-heals to the real cadence.
+    {
+        SourceGapCounter gaps;
+        uint64_t t = 0;
+        gaps.OnTimestamp(t);
+        gaps.OnTimestamp(t += 2 * kFrameUs);
+        for (int i = 0; i < 60; ++i) gaps.OnTimestamp(t += kFrameUs);
+        assert(gaps.CadenceUs() == kFrameUs);
+        assert(gaps.GapFrames() == 0);
+    }
+
+    // Backwards, duplicate and huge stamps never underflow or overflow.
+    {
+        SourceGapCounter gaps;
+        gaps.OnTimestamp(1'000'000);
+        gaps.OnTimestamp(1'000'000 + kFrameUs);
+        gaps.OnTimestamp(1'000'000 + kFrameUs);
+        gaps.OnTimestamp(500);
+        assert(gaps.GapFrames() == 0);
+        gaps.OnTimestamp(500 + kFrameUs);
+        gaps.OnTimestamp(UINT64_MAX - 1);
+        gaps.OnTimestamp(UINT64_MAX);
+        gaps.OnTimestamp(5);
+        gaps.OnTimestamp(5 + kFrameUs);
+        gaps.OnTimestamp(5 + 2 * kFrameUs);
+        assert(gaps.GapFrames() > 0);
+    }
+
     return 0;
 }
