@@ -24,12 +24,18 @@ enum OutputOrientation: String {
     var rotationAngle: CGFloat { self == .portrait ? 90 : 0 }
 }
 
-/// Output quality presets, all 60 fps (gate G8 prime). The chosen preset sets the
-/// capture format and the encoder bit rate; it never changes the wire format.
+/// Output quality presets (gate G8 prime): the 60 fps ladder, plus Cinematic at
+/// 30 fps, Apple's limit for it (gate G11). The chosen preset sets the camera,
+/// the capture format and the encoder bit rate; it never changes the wire format.
 enum StreamPreset: String, CaseIterable {
     case p720 = "720p60"
     case p1080 = "1080p60"
     case p2160 = "4K60"
+    case cinematic1080 = "Cinematic 1080p30"
+    case cinematic2160 = "Cinematic 4K30"
+
+    /// The 60 fps presets, lowest first. The quality advisor (T5.7) steps only along these.
+    static let ladder: [StreamPreset] = [.p720, .p1080, .p2160]
 
     static let preferenceKey = "stream.preset"
     static var stored: StreamPreset {
@@ -38,17 +44,42 @@ enum StreamPreset: String, CaseIterable {
         return preset
     }
 
-    var width: Int { switch self { case .p720: return 1280; case .p1080: return 1920; case .p2160: return 3840 } }
-    var height: Int { switch self { case .p720: return 720; case .p1080: return 1080; case .p2160: return 2160 } }
-    var frameRate: Int { 60 }
-    var title: String { switch self { case .p720: return "720p"; case .p1080: return "1080p"; case .p2160: return "4K" } }
+    /// T5.9: Cinematic Video runs on the rear Dual Wide camera only.
+    var isCinematic: Bool { self == .cinematic1080 || self == .cinematic2160 }
+    var width: Int {
+        switch self {
+        case .p720: return 1280
+        case .p1080, .cinematic1080: return 1920
+        case .p2160, .cinematic2160: return 3840
+        }
+    }
+    var height: Int {
+        switch self {
+        case .p720: return 720
+        case .p1080, .cinematic1080: return 1080
+        case .p2160, .cinematic2160: return 2160
+        }
+    }
+    var frameRate: Int { isCinematic ? 30 : 60 }
+    var title: String {
+        switch self {
+        case .p720: return "720p"
+        case .p1080: return "1080p"
+        case .p2160: return "4K"
+        case .cinematic1080: return "Cine 1080"
+        case .cinematic2160: return "Cine 4K"
+        }
+    }
 
     /// Average bit rates in bits per second (gate G8 prime). Peak = average / 4 bytes per 1 s.
+    /// Cinematic uses the rate of the same size (G8 prime).
     var bitRates: (usb: Int, wifi: Int) {
         switch self {
         case .p720: return (usb: 10_000_000, wifi: 8_000_000)
         case .p1080: return (usb: 20_000_000, wifi: 15_000_000)
         case .p2160: return (usb: 40_000_000, wifi: 25_000_000)
+        case .cinematic1080: return StreamPreset.p1080.bitRates
+        case .cinematic2160: return StreamPreset.p2160.bitRates
         }
     }
 }
@@ -102,6 +133,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var activeOutputOrientation: OutputOrientation = .landscape
     private var notificationTokens: [NSObjectProtocol] = []
     private var pressureObservation: NSKeyValueObservation?
+    // T5.9: the "too dark" scene status while a Cinematic preset runs. sessionQueue.
+    private var cinematicSceneObservation: NSKeyValueObservation?
     private var outputFile: FileHandle?
     // Raw 4K60 HEVC recording consumes roughly 600 MB/min at the stream bitrate.
     // Leave it off for live streaming; enable only while diagnosing encoding.
@@ -261,9 +294,12 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         // session preset is allowed to replace that format with its default.
         session.sessionPreset = .inputPriority
 
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
-                                                   for: .video,
-                                                   position: .back) else {
+        // T5.9: a stored Cinematic preset starts on the Dual Wide camera; without
+        // one, start at 4K60 on the Wide camera.
+        if currentPreset().isCinematic, Self.captureDevice(for: currentPreset()) == nil {
+            setActivePreset(.p2160)
+        }
+        guard var device = Self.captureDevice(for: currentPreset()) else {
             updateStreamHealth(camera: "CAMERA error • back camera unavailable",
                                event: "No back camera found")
             report("No back camera found")
@@ -323,8 +359,18 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         // Input attachment resets the format and duration. Apply them after
         // attachment, within this configuration transaction.
-        let preset = currentPreset()
-        guard applyFormat(preset, to: device) else {
+        var preset = currentPreset()
+        var configured = applyFormat(preset, to: device) && applyCinematic(preset)
+        if !configured, preset.isCinematic, let wide = Self.captureDevice(for: .p2160) {
+            // T5.9: never leave the app without a camera because Cinematic failed.
+            report("\(preset.rawValue) unavailable • starting at 4K60")
+            preset = .p2160
+            setActivePreset(preset)
+            UserDefaults.standard.set(preset.rawValue, forKey: StreamPreset.preferenceKey)
+            if switchCamera(to: wide) { device = wide }
+            configured = applyFormat(preset, to: device)
+        }
+        guard configured else {
             updateStreamHealth(camera: "CAMERA error • \(preset.rawValue) unavailable",
                                event: "\(preset.rawValue) camera configuration failed")
             session.commitConfiguration()
@@ -400,7 +446,9 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
                            usb: "USB waiting for Windows receiver • HEVC paused",
                            event: "Camera started • screen kept awake")
         report("Camera active • screen kept awake • waiting for PC")
-        publishPresetAvailability(for: device)
+        publishPreset(preset)
+        publishPresetAvailability()
+        publishCinematicControls()
     }
 
     /// Read-only device probe for the owner's capability report. It runs only
@@ -493,9 +541,10 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private func recommendPreset(from preset: StreamPreset, overWiFi: Bool, bitrate: Int, target: Int,
                                  window: LinkWindow) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
-        guard let index = StreamPreset.allCases.firstIndex(of: preset) else { return }
+        // Cinematic is the user's explicit choice: never advise away from it.
+        guard let index = StreamPreset.ladder.firstIndex(of: preset) else { return }
         guard let advice = presetAdvisor.advice(presetIndex: index,
-                                                presetCount: StreamPreset.allCases.count,
+                                                presetCount: StreamPreset.ladder.count,
                                                 overWiFi: overWiFi,
                                                 bitrateAtFloor: bitrate <= target / 2,
                                                 bitrateAtFull: bitrate >= target,
@@ -507,8 +556,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         case .down(let advisedIndex, let advisedReason): toIndex = advisedIndex; reason = advisedReason
         case .up(let advisedIndex, let advisedReason): toIndex = advisedIndex; reason = advisedReason
         }
-        guard StreamPreset.allCases.indices.contains(toIndex) else { return }
-        let suggested = StreamPreset.allCases[toIndex]
+        guard StreamPreset.ladder.indices.contains(toIndex) else { return }
+        let suggested = StreamPreset.ladder[toIndex]
         report("Quality advice: \(suggested.rawValue) • \(reason)")
         DispatchQueue.main.async { [weak self] in self?.onAdvice?(suggested, reason) }
     }
@@ -561,42 +610,70 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func setPreset(_ preset: StreamPreset) {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            guard self.isConfigured, !self.stopped, let device = self.videoDevice else {
+            guard self.isConfigured, !self.stopped, let previous = self.videoDevice,
+                  let device = Self.captureDevice(for: preset) else {
                 self.publishPreset(self.currentPreset())
                 return
             }
+            let previousPreset = self.currentPreset()
+            // T5.9: entering or leaving Cinematic swaps the camera input inside the
+            // same transaction. The video output, the encoder session owner and the
+            // PC connection stay.
+            let switched = device.uniqueID != previous.uniqueID
             self.session.beginConfiguration()
-            let applied = self.applyFormat(preset, to: device)
+            let applied = (!switched || self.switchCamera(to: device)) &&
+                self.applyFormat(preset, to: device) && self.applyCinematic(preset)
             if applied {
                 // Set before the commit so the first frames of the new size are
                 // not mistaken for a wrong-size camera.
-                self.encoderStateLock.lock()
-                self.activePreset = preset
-                self.liveBitRate = nil
-                self.encoderStateLock.unlock()
+                self.setActivePreset(preset)
+            } else if switched || preset.isCinematic {
+                // The camera or the format may have changed half way: put the
+                // previous camera and format back; the stream keeps going.
+                let restored = (!switched || self.switchCamera(to: previous)) &&
+                    self.applyFormat(previousPreset, to: previous) && self.applyCinematic(previousPreset)
+                if !restored { self.report("Could not restore \(previousPreset.rawValue)") }
             }
             self.session.commitConfiguration()
             guard applied else {
                 self.report("\(preset.rawValue) unavailable • keeping \(self.currentPreset().rawValue)")
+                if switched {
+                    // The camera went away and came back: rejoin cleanly.
+                    self.publishOutputOrientation(self.activeOutputOrientation)
+                    self.invalidateEncoder(reason: nil)
+                    self.sender.resetForDiscontinuity(reason: "Preset \(previousPreset.rawValue)")
+                }
                 self.publishPreset(self.currentPreset())
+                self.publishCinematicControls()
                 return
             }
             UserDefaults.standard.set(preset.rawValue, forKey: StreamPreset.preferenceKey)
+            // A new input has a new preview connection: re-apply its rotation.
+            if switched { self.publishOutputOrientation(self.activeOutputOrientation) }
             self.invalidateEncoder(reason: nil)
             self.sender.resetForDiscontinuity(reason: "Preset \(preset.rawValue)")
             self.refreshActiveFormatTelemetry(device)
             self.resetAdaptiveBitRate()
             self.publishPreset(preset)
+            self.publishCinematicControls()
         }
+    }
+
+    private func setActivePreset(_ preset: StreamPreset) {
+        encoderStateLock.lock()
+        activePreset = preset
+        liveBitRate = nil
+        encoderStateLock.unlock()
     }
 
     private func publishPreset(_ preset: StreamPreset) {
         DispatchQueue.main.async { [weak self] in self?.onPresetChanged?(preset) }
     }
 
-    private func publishPresetAvailability(for device: AVCaptureDevice) {
+    private func publishPresetAvailability() {
         let available = StreamPreset.allCases.filter { preset in
-            device.formats.contains { Self.format($0, supports: preset) }
+            guard let device = Self.captureDevice(for: preset) else { return false }
+            return device.formats.contains { Self.format($0, supports: preset) }
         }
         for preset in StreamPreset.allCases where !available.contains(preset) {
             report("\(preset.title) not supported on this iPhone")
@@ -975,10 +1052,136 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private static func format(_ format: AVCaptureDevice.Format, supports preset: StreamPreset) -> Bool {
         let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
         let frameRate = Double(preset.frameRate)
-        return Int(dimensions.width) == preset.width && Int(dimensions.height) == preset.height &&
+        let matches = Int(dimensions.width) == preset.width && Int(dimensions.height) == preset.height &&
             format.videoSupportedFrameRateRanges.contains(where: {
                 $0.minFrameRate <= frameRate && $0.maxFrameRate >= frameRate
             })
+        guard matches, preset.isCinematic else { return matches }
+        if #available(iOS 26, *) { return format.isCinematicVideoCaptureSupported }
+        return false
+    }
+
+    // MARK: - T5.9 Cinematic mode (gate G11)
+    /// The rear camera each preset runs on: Cinematic needs the Dual Wide camera.
+    private static func captureDevice(for preset: StreamPreset) -> AVCaptureDevice? {
+        AVCaptureDevice.default(preset.isCinematic ? .builtInDualWideCamera : .builtInWideAngleCamera,
+                                for: .video, position: .back)
+    }
+
+    private func cameraInput() -> AVCaptureDeviceInput? {
+        session.inputs.lazy.compactMap { $0 as? AVCaptureDeviceInput }.first
+    }
+
+    /// R5: replaces the session's camera input. Runs on sessionQueue inside
+    /// begin/commitConfiguration. Keeps the PC connection (P1): the caller
+    /// invalidates the encoder and calls resetForDiscontinuity.
+    private func switchCamera(to device: AVCaptureDevice) -> Bool {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard let newInput = try? AVCaptureDeviceInput(device: device) else {
+            report("Camera input unavailable for \(device.localizedName)")
+            return false
+        }
+        let oldInputs = session.inputs
+        oldInputs.forEach { session.removeInput($0) }
+        guard session.canAddInput(newInput) else {
+            oldInputs.forEach { if session.canAddInput($0) { session.addInput($0) } }
+            report("Camera input refused for \(device.localizedName)")
+            return false
+        }
+        session.addInput(newInput)
+        videoDevice = device
+        pressureObservation = device.observe(\.systemPressureState, options: [.new]) { [weak self] device, _ in
+            self?.handleSystemPressureChange(device.systemPressureState.level)
+        }
+        handleSystemPressureChange(device.systemPressureState.level)
+        // The output gets a new connection to the new input: put the rotation back.
+        if let output = videoOutput, !applyOutputOrientation(activeOutputOrientation, to: output) {
+            report("\(activeOutputOrientation.title) output lost after the camera switch")
+        }
+        return true
+    }
+
+    /// Turns Cinematic Video on the camera input on for a Cinematic preset and
+    /// off otherwise. Runs inside begin/commitConfiguration, after applyFormat:
+    /// a format change can turn it off again.
+    private func applyCinematic(_ preset: StreamPreset) -> Bool {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard #available(iOS 26, *) else { return !preset.isCinematic }
+        guard let input = cameraInput() else { return !preset.isCinematic }
+        guard preset.isCinematic else {
+            if input.isCinematicVideoCaptureEnabled { input.isCinematicVideoCaptureEnabled = false }
+            return true
+        }
+        guard input.isCinematicVideoCaptureSupported else {
+            report("Cinematic is not supported by this camera format")
+            return false
+        }
+        input.isCinematicVideoCaptureEnabled = true
+        return true
+    }
+
+    /// Cinematic only: the simulated aperture range and value. nil hides the control. Main queue.
+    var onCinematicAperture: (((range: ClosedRange<Float>, value: Float)?) -> Void)?
+    /// Cinematic only: a short note when the scene is too dark; nil clears it. Main queue.
+    var onCinematicNote: ((String?) -> Void)?
+
+    /// Shows or hides the Cinematic controls for the preset in use.
+    private func publishCinematicControls() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        cinematicSceneObservation = nil
+        var aperture: (range: ClosedRange<Float>, value: Float)?
+        if #available(iOS 26, *), currentPreset().isCinematic, let device = videoDevice,
+           let input = cameraInput(), input.isCinematicVideoCaptureEnabled {
+            let format = device.activeFormat
+            if format.minSimulatedAperture > 0, format.maxSimulatedAperture >= format.minSimulatedAperture {
+                aperture = (format.minSimulatedAperture...format.maxSimulatedAperture, input.simulatedAperture)
+            }
+            cinematicSceneObservation = device.observe(\.cinematicVideoCaptureSceneMonitoringStatuses,
+                                                       options: [.initial, .new]) { [weak self] device, _ in
+                let dark = device.cinematicVideoCaptureSceneMonitoringStatuses.contains(.notEnoughLight)
+                DispatchQueue.main.async { self?.onCinematicNote?(dark ? "Not enough light for Cinematic" : nil) }
+            }
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.onCinematicNote?(nil) }
+        }
+        DispatchQueue.main.async { [weak self] in self?.onCinematicAperture?(aperture) }
+    }
+
+    /// Sets the simulated aperture (f-number) of the running Cinematic preset,
+    /// clamped to the format's range.
+    func setCinematicAperture(_ value: Float) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.stopped, self.currentPreset().isCinematic,
+                  let device = self.videoDevice, let input = self.cameraInput() else { return }
+            if #available(iOS 26, *), input.isCinematicVideoCaptureEnabled {
+                let format = device.activeFormat
+                guard format.minSimulatedAperture > 0 else { return }
+                input.simulatedAperture = min(max(value, format.minSimulatedAperture), format.maxSimulatedAperture)
+            }
+        }
+    }
+
+    /// A tap on the preview while Cinematic runs: track the subject at `point`,
+    /// or hold focus there when `fixed` is true. `point` is in the camera's
+    /// 0...1 coordinates (AVCaptureVideoPreviewLayer.captureDevicePointConverted).
+    func focusCinematic(at point: CGPoint, fixed: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self, self.isConfigured, !self.stopped, self.currentPreset().isCinematic,
+                  let device = self.videoDevice, let input = self.cameraInput() else { return }
+            guard #available(iOS 26, *), input.isCinematicVideoCaptureEnabled else { return }
+            let clamped = CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
+            do {
+                try device.lockForConfiguration()
+                defer { device.unlockForConfiguration() }
+                if fixed {
+                    device.setCinematicVideoFixedFocus(at: clamped, focusMode: .strong)
+                } else {
+                    device.setCinematicVideoTrackingFocus(at: clamped, focusMode: .strong)
+                }
+            } catch {
+                self.report("Cinematic focus failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func applyFormat(_ preset: StreamPreset, to device: AVCaptureDevice) -> Bool {
@@ -1365,7 +1568,8 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             guard let self, self.isConfigured, !self.stopped else { return }
             self.publishOutputOrientation(self.activeOutputOrientation)
             self.publishPreset(self.currentPreset())
-            if let device = self.videoDevice { self.publishPresetAvailability(for: device) }
+            self.publishPresetAvailability()
+            self.publishCinematicControls()
         }
     }
 
@@ -1654,7 +1858,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         updateStreamHealth(camera: "CAMERA recovering • waiting for first frame",
                            event: reason)
         session.beginConfiguration()
-        let configured = applyFormat(currentPreset(), to: device)
+        let configured = applyFormat(currentPreset(), to: device) && applyCinematic(currentPreset())
         session.commitConfiguration()
         guard configured else {
             scheduleRecoveryOnSessionQueue(reason: "Camera configuration recovery")
@@ -1669,6 +1873,7 @@ final class CameraStreamer: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         refreshActiveFormatTelemetry(device)
         sender.resetForDiscontinuity(reason: "Camera recovered • waiting for keyframe")
+        publishCinematicControls()
         startLivenessWatchdog()
         requestKeyFrame()
         report(reason)

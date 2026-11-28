@@ -155,7 +155,15 @@ grep -q '\[NSNumber(value: target / 4), NSNumber(value: 1)\] as CFArray' "$sourc
 # T5.4: the other G8 prime rates and the 60 fps presets.
 grep -q 'case .p720: return (usb: 10_000_000, wifi: 8_000_000)' "$source"
 grep -q 'case .p1080: return (usb: 20_000_000, wifi: 15_000_000)' "$source"
-grep -q 'var frameRate: Int { 60 }' "$source"
+# G11: every preset is 60 fps except Cinematic, which is 30 fps (Apple's limit).
+grep -q 'var frameRate: Int { isCinematic ? 30 : 60 }' "$source"
+grep -q 'var isCinematic: Bool { self == .cinematic1080 || self == .cinematic2160 }' "$source"
+# T5.9: Cinematic is applied on the camera input, on the Dual Wide camera only,
+# and the quality advisor never steps into or out of a Cinematic preset.
+grep -q 'isCinematicVideoCaptureEnabled' "$source"
+grep -q 'preset.isCinematic ? .builtInDualWideCamera : .builtInWideAngleCamera' "$source"
+grep -q 'static let ladder: \[StreamPreset\] = \[.p720, .p1080, .p2160\]' "$source"
+grep -q 'StreamPreset.ladder.firstIndex(of: preset)' "$source"
 # T5.4: switching presets keeps the PC connection: setPreset never rebinds
 # the listener and always asks for a new join point.
 set_preset_body=$(tr -d '\r' < "$source" | awk '

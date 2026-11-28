@@ -18,6 +18,12 @@ final class CameraViewController: UIViewController {
     private let wifiRow = UIStackView()
     private var didStart = false
     private var confirmedOutputOrientation: OutputOrientation = .landscape
+    // T5.9: Cinematic controls, shown only while a Cinematic preset runs.
+    private let focusView = UIView()
+    private let cinematicRow = UIStackView()
+    private let apertureSlider = UISlider()
+    private let apertureLabel = UILabel()
+    private let cinematicNoteLabel = UILabel()
 
     init(streamer: CameraStreamer) {
         self.streamer = streamer
@@ -34,6 +40,19 @@ final class CameraViewController: UIViewController {
         view.backgroundColor = .black
         previewLayer.videoGravity = .resizeAspectFill
         view.layer.addSublayer(previewLayer)
+        // T5.9: taps on the preview set the Cinematic focus. The view sits under
+        // every control, so taps on the controls never reach it.
+        focusView.translatesAutoresizingMaskIntoConstraints = false
+        focusView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(previewTapped(_:))))
+        focusView.addGestureRecognizer(UILongPressGestureRecognizer(target: self,
+                                                                    action: #selector(previewLongPressed(_:))))
+        view.addSubview(focusView)
+        NSLayoutConstraint.activate([
+            focusView.topAnchor.constraint(equalTo: view.topAnchor),
+            focusView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            focusView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            focusView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
 
         statusLabel.text = "iPhone Camera Stream 0.4\nStarting camera…"
         statusLabel.textColor = .white
@@ -64,7 +83,7 @@ final class CameraViewController: UIViewController {
         orientationControl.addTarget(self, action: #selector(outputOrientationChanged), for: .valueChanged)
         view.addSubview(orientationControl)
 
-        // T5.4: output quality preset (720p / 1080p / 4K, all 60 fps).
+        // T5.4: output quality preset (720p / 1080p / 4K at 60 fps; T5.9 Cinematic at 30 fps).
         presetControl.selectedSegmentIndex = StreamPreset.allCases.firstIndex(of: confirmedPreset) ?? 0
         presetControl.selectedSegmentTintColor = .systemBlue
         presetControl.backgroundColor = UIColor.black.withAlphaComponent(0.6)
@@ -138,6 +157,36 @@ final class CameraViewController: UIViewController {
             adviceBanner.bottomAnchor.constraint(equalTo: capabilitiesButton.topAnchor, constant: -10),
         ])
         view.addSubview(wifiRow)
+        // T5.9: simulated aperture, applied through CameraStreamer only.
+        apertureLabel.textColor = .white
+        apertureLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
+        apertureSlider.addTarget(self, action: #selector(apertureChanged), for: .valueChanged)
+        apertureSlider.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        cinematicRow.axis = .horizontal
+        cinematicRow.alignment = .center
+        cinematicRow.spacing = 8
+        cinematicRow.addArrangedSubview(apertureLabel)
+        cinematicRow.addArrangedSubview(apertureSlider)
+        cinematicRow.isLayoutMarginsRelativeArrangement = true
+        cinematicRow.layoutMargins = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
+        cinematicRow.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        cinematicRow.layer.cornerRadius = 10
+        cinematicRow.isHidden = true
+        cinematicRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(cinematicRow)
+        cinematicNoteLabel.textColor = .systemYellow
+        cinematicNoteLabel.font = .preferredFont(forTextStyle: .subheadline)
+        cinematicNoteLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        cinematicNoteLabel.isHidden = true
+        cinematicNoteLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(cinematicNoteLabel)
+        NSLayoutConstraint.activate([
+            cinematicRow.topAnchor.constraint(equalTo: presetControl.bottomAnchor, constant: 8),
+            cinematicRow.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+            cinematicRow.trailingAnchor.constraint(lessThanOrEqualTo: wifiRow.leadingAnchor, constant: -8),
+            cinematicNoteLabel.topAnchor.constraint(equalTo: cinematicRow.bottomAnchor, constant: 6),
+            cinematicNoteLabel.leadingAnchor.constraint(equalTo: cinematicRow.leadingAnchor),
+        ])
         NSLayoutConstraint.activate([
             presetControl.topAnchor.constraint(equalTo: orientationControl.bottomAnchor, constant: 8),
             presetControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -184,6 +233,19 @@ final class CameraViewController: UIViewController {
             self.advisedPreset = preset
             self.adviceLabel.text = "\(preset.rawValue) recommended — \(reason)."
             self.adviceBanner.isHidden = false
+        }
+        streamer.onCinematicAperture = { [weak self] aperture in
+            guard let self else { return }
+            self.cinematicRow.isHidden = aperture == nil
+            guard let aperture else { return }
+            self.apertureSlider.minimumValue = aperture.range.lowerBound
+            self.apertureSlider.maximumValue = aperture.range.upperBound
+            self.apertureSlider.value = aperture.value
+            self.updateApertureLabel()
+        }
+        streamer.onCinematicNote = { [weak self] note in
+            self?.cinematicNoteLabel.text = note.map { " \($0) " }
+            self?.cinematicNoteLabel.isHidden = note == nil
         }
         streamer.onPresetAvailability = { [weak self] available in
             guard let self else { return }
@@ -233,6 +295,32 @@ final class CameraViewController: UIViewController {
         // accepts the format; onPresetChanged moves it.
         presetControl.selectedSegmentIndex = StreamPreset.allCases.firstIndex(of: confirmedPreset) ?? 0
         streamer.setPreset(StreamPreset.allCases[index])
+    }
+
+    @objc private func apertureChanged() {
+        updateApertureLabel()
+        streamer.setCinematicAperture(apertureSlider.value)
+    }
+
+    private func updateApertureLabel() {
+        apertureLabel.text = String(format: "f/%.1f", apertureSlider.value)
+    }
+
+    @objc private func previewTapped(_ recognizer: UITapGestureRecognizer) {
+        focusCinematic(from: recognizer, fixed: false)
+    }
+
+    @objc private func previewLongPressed(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        focusCinematic(from: recognizer, fixed: true)
+    }
+
+    /// Tap: track the subject under the finger. Long press: hold focus there.
+    private func focusCinematic(from recognizer: UIGestureRecognizer, fixed: Bool) {
+        guard confirmedPreset.isCinematic else { return }
+        let layerPoint = recognizer.location(in: view)
+        streamer.focusCinematic(at: previewLayer.captureDevicePointConverted(fromLayerPoint: layerPoint),
+                                fixed: fixed)
     }
 
     @objc private func wifiSwitchChanged() {

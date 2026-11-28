@@ -77,6 +77,9 @@ grep -q 'streamer.setWiFiEnabled' "$view_controller"
 
 # T5.4: the preset control talks to CameraStreamer only.
 grep -q 'streamer.setPreset' "$view_controller"
+# T5.9: the Cinematic aperture and focus go through CameraStreamer only.
+grep -q 'streamer.setCinematicAperture' "$view_controller"
+grep -q 'streamer.focusCinematic' "$view_controller"
 
 # T5.8: the live rate is clamped by BitrateController and shown on the phone;
 # a new preset, connection or recovery goes back to the full preset rate.
